@@ -1,0 +1,293 @@
+import ora from 'ora';
+import chalk from 'chalk';
+import {
+  Variant,
+  Shape,
+  SubscriptionTier,
+  variantToMachineType,
+  shapeToMachineShape,
+  isHighMemOnlyAccelerator,
+} from '../colab/api.js';
+import { RuntimeManager } from '../runtime/runtime-manager.js';
+import { ColabClient } from '../colab/client.js';
+import { DaemonClient } from '../daemon/client.js';
+
+export async function createRuntimeCommand(
+  runtimeManager: RuntimeManager,
+  options: {
+    accelerator?: string;
+    shape?: string;
+  },
+): Promise<void> {
+  const selection = parseAcceleratorSelection(options.accelerator);
+  const variant = selection.variant;
+
+  let shape: Shape | undefined;
+  switch (options.shape?.toLowerCase()) {
+    case 'highmem':
+    case 'high-ram':
+      shape = Shape.HIGHMEM;
+      break;
+    case 'standard':
+      shape = Shape.STANDARD;
+      break;
+    case undefined:
+      shape = undefined;
+      break;
+    default:
+      console.error(
+        `Unknown shape: ${options.shape}. Use standard, highmem, or high-ram.`,
+      );
+      process.exit(1);
+  }
+
+  const spinner = ora(
+    `Creating ${variantToMachineType(variant)} runtime...`,
+  ).start();
+  try {
+    const server = await runtimeManager.create({
+      variant,
+      accelerator: selection.accelerator,
+      shape,
+    });
+    spinner.succeed(
+      `Runtime created: ${server.label} (endpoint: ${server.endpoint})`,
+    );
+  } catch (err) {
+    spinner.fail('Failed to create runtime');
+    throw err;
+  }
+}
+
+function parseAcceleratorSelection(accelerator: string | undefined): {
+  variant: Variant;
+  accelerator?: string;
+} {
+  if (!accelerator) {
+    console.error(
+      'Missing accelerator. Use --accelerator with one of: CPU, H100, G4, A100, L4, T4, v6e-1, v5e-1.',
+    );
+    process.exit(1);
+  }
+
+  const normalized = accelerator
+    .trim()
+    .toUpperCase()
+    .replace(/\s+(GPU|TPU)$/, '')
+    .replace(/-/g, '')
+    .replace(/\s+/g, '');
+
+  switch (normalized) {
+    case 'CPU':
+      return { variant: Variant.DEFAULT };
+    case 'H100':
+    case 'G4':
+    case 'A100':
+    case 'L4':
+    case 'T4':
+      return { variant: Variant.GPU, accelerator: normalized };
+    case 'V6E1':
+    case 'V5E1':
+      return { variant: Variant.TPU, accelerator: normalized };
+    default:
+      console.error(
+        `Unknown accelerator: ${accelerator}. Use one of: CPU, H100, G4, A100, L4, T4, v6e-1, v5e-1.`,
+      );
+      process.exit(1);
+  }
+}
+
+export async function listRuntimesCommand(
+  runtimeManager: RuntimeManager,
+): Promise<void> {
+  const spinner = ora('Fetching runtimes...').start();
+  try {
+    const assignments = await runtimeManager.list();
+    spinner.stop();
+
+    if (assignments.length === 0) {
+      console.log('No active runtimes.');
+      return;
+    }
+
+    console.log(chalk.bold('\nActive Runtimes:'));
+    for (const a of assignments) {
+      const type = variantToMachineType(a.variant);
+      const shape = shapeToMachineShape(a.machineShape);
+      const accel =
+        a.accelerator && a.accelerator !== 'NONE'
+          ? ` ${a.accelerator}`
+          : '';
+      console.log(
+        `  ${chalk.green('●')} ${type}${accel} (${shape}) - ${chalk.dim(a.endpoint)}`,
+      );
+    }
+    console.log('');
+  } catch (err) {
+    spinner.fail('Failed to list runtimes');
+    throw err;
+  }
+}
+
+export async function listAvailableRuntimesCommand(
+  colabClient: ColabClient,
+): Promise<void> {
+  const spinner = ora('Fetching available runtime options...').start();
+  try {
+    const userInfo = await colabClient.getUserInfo();
+    spinner.stop();
+
+    const supportsHighMem = userInfo.subscriptionTier !== SubscriptionTier.NONE;
+    const available = new Map<string, { variant: Variant; accelerator?: string }>();
+    available.set('CPU', { variant: Variant.DEFAULT });
+    for (const acc of userInfo.eligibleAccelerators) {
+      for (const model of acc.models) {
+        available.set(`${acc.variant}:${model}`, {
+          variant: acc.variant,
+          accelerator: model,
+        });
+      }
+    }
+
+    console.log(chalk.bold('\nAvailable Runtime Options:'));
+
+    for (const option of getPreferredAvailableOptions(available)) {
+      const shapes = getDisplayShapes(
+        option.variant,
+        option.accelerator,
+        supportsHighMem,
+      );
+      console.log(
+        `  ${chalk.green('●')} ${formatAvailableOptionLabel(option.variant, option.accelerator)} (${shapes.map(shapeToMachineShape).join(', ')})`,
+      );
+    }
+
+    console.log('');
+  } catch (err) {
+    spinner.fail('Failed to fetch available runtime options');
+    throw err;
+  }
+}
+
+function getPreferredAvailableOptions(
+  available: Map<string, { variant: Variant; accelerator?: string }>,
+): Array<{ variant: Variant; accelerator?: string }> {
+  const orderedKeys = [
+    'CPU',
+    `${Variant.GPU}:H100`,
+    `${Variant.GPU}:G4`,
+    `${Variant.GPU}:A100`,
+    `${Variant.GPU}:L4`,
+    `${Variant.GPU}:T4`,
+    `${Variant.TPU}:V6E1`,
+    `${Variant.TPU}:V5E1`,
+  ];
+
+  const ordered = orderedKeys
+    .map((key) => available.get(key))
+    .filter((option): option is { variant: Variant; accelerator?: string } => option !== undefined);
+
+  const leftovers = [...available.entries()]
+    .filter(([key]) => !orderedKeys.includes(key))
+    .map(([, option]) => option)
+    .sort((a, b) => formatAvailableOptionLabel(a.variant, a.accelerator).localeCompare(
+      formatAvailableOptionLabel(b.variant, b.accelerator),
+    ));
+
+  return [...ordered, ...leftovers];
+}
+
+function formatAvailableOptionLabel(
+  variant: Variant,
+  accelerator?: string,
+): string {
+  if (variant === Variant.DEFAULT) {
+    return 'CPU';
+  }
+
+  const type = variantToMachineType(variant);
+  if (!accelerator) {
+    return type;
+  }
+
+  if (variant === Variant.TPU) {
+    switch (accelerator) {
+      case 'V6E1':
+        return `${type} v6e-1`;
+      case 'V5E1':
+        return `${type} v5e-1`;
+      default:
+        return `${type} ${accelerator.toLowerCase()}`;
+    }
+  }
+
+  return `${type} ${accelerator}`;
+}
+
+function getDisplayShapes(
+  variant: Variant,
+  accelerator: string | undefined,
+  supportsHighMem: boolean,
+): Shape[] {
+  if (variant === Variant.DEFAULT) {
+    return supportsHighMem ? [Shape.STANDARD, Shape.HIGHMEM] : [Shape.STANDARD];
+  }
+
+  if (accelerator && isHighMemOnlyAccelerator(accelerator)) {
+    return [Shape.HIGHMEM];
+  }
+
+  return supportsHighMem ? [Shape.STANDARD, Shape.HIGHMEM] : [Shape.STANDARD];
+}
+
+export async function destroyRuntimeCommand(
+  runtimeManager: RuntimeManager,
+  endpoint?: string,
+): Promise<void> {
+  if (!endpoint) {
+    // Use latest server
+    const server = runtimeManager.getLatestServer();
+    if (!server) {
+      console.error(
+        'No runtime to destroy. Specify --endpoint or create one first.',
+      );
+      process.exit(1);
+    }
+    endpoint = server.endpoint;
+  }
+
+  const spinner = ora('Destroying runtime...').start();
+  try {
+    await runtimeManager.destroy(endpoint);
+    spinner.succeed(`Runtime destroyed: ${endpoint}`);
+  } catch (err) {
+    spinner.fail('Failed to destroy runtime');
+    throw err;
+  }
+}
+
+export async function restartRuntimeCommand(
+  runtimeManager: RuntimeManager,
+  endpoint?: string,
+): Promise<void> {
+  const server = endpoint
+    ? runtimeManager.getServerByEndpoint(endpoint)
+    : runtimeManager.getLatestServer();
+  if (!server) {
+    console.error('No runtime found. Create one first with `colab-cli runtime create`.');
+    process.exit(1);
+  }
+
+  const spinner = ora('Restarting kernel...').start();
+  const client = new DaemonClient();
+  try {
+    await client.connect(server.id);
+    await client.restart();
+    spinner.succeed('Kernel restarted');
+  } catch (err) {
+    spinner.fail('Failed to restart kernel');
+    throw err;
+  } finally {
+    client.close();
+  }
+}

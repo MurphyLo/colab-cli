@@ -1,0 +1,20 @@
+import type { KernelOutput } from '../jupyter/kernel-connection.js';
+
+export type ClientMessage =
+  | { type: 'exec'; code: string }
+  | { type: 'interrupt' }
+  | { type: 'restart' }
+  | { type: 'ping' };
+
+export type ServerMessage =
+  | { type: 'ready' }
+  | { type: 'output'; output: KernelOutput }
+  | { type: 'exec_done' }
+  | { type: 'exec_error'; message: string }
+  | { type: 'restarted' }
+  | { type: 'restart_error'; message: string }
+  | { type: 'pong' };
+
+export function encode(msg: ClientMessage | ServerMessage): string {
+  return JSON.stringify(msg) + '\n';
+}

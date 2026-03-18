@@ -75,20 +75,24 @@ async function main() {
   );
   refresher.start();
 
-  // Create and connect kernel
+  // Create kernel (connect later, after socket is listening)
   const kernel = new KernelConnection(
     () => refresher.proxyUrl,
     () => refresher.token,
     colabClient,
     server.endpoint,
   );
-  console.log('Connecting to kernel...');
-  await kernel.connect();
-  console.log('Kernel connected');
 
-  // Start Unix socket server
+  // Begin kernel connection (may be slow on cold-start GPU runtimes).
+  // Store the promise so exec handlers can await it instead of failing early.
+  console.log('Connecting to kernel...');
+  const kernelReady = kernel.connect().then(() => {
+    console.log('Kernel connected');
+  });
+
+  // Start Unix socket server early so CLI detects daemon quickly
   const socketServer = net.createServer((socket) =>
-    handleClient(socket, kernel),
+    handleClient(socket, kernel, kernelReady),
   );
 
   socketServer.listen(SOCKET_PATH, () => {
@@ -110,16 +114,23 @@ async function main() {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  // Health monitor: exit if WS dies
+  // Wait for kernel connection to complete (or fail and exit)
+  await kernelReady;
+
+  // Health monitor: exit if WS disconnects unexpectedly (but not during restart)
   setInterval(() => {
-    if (!kernel.isConnected) {
+    if (!kernel.isConnected && !kernel.isRestarting) {
       console.error('Kernel WebSocket disconnected, shutting down');
       shutdown();
     }
   }, 30_000).unref();
 }
 
-function handleClient(socket: net.Socket, kernel: KernelConnection) {
+function handleClient(
+  socket: net.Socket,
+  kernel: KernelConnection,
+  kernelReady: Promise<void>,
+) {
   const send = (msg: ServerMessage) => {
     if (!socket.destroyed) socket.write(encode(msg));
   };
@@ -139,6 +150,8 @@ function handleClient(socket: net.Socket, kernel: KernelConnection) {
     switch (msg.type) {
       case 'exec': {
         try {
+          // Wait for kernel to be ready if still connecting at startup
+          await kernelReady;
           if (!kernel.isConnected) {
             send({
               type: 'exec_error',

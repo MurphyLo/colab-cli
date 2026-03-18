@@ -151,11 +151,15 @@ runtime create
          ├── 初始化 AuthManager、ColabClient
          ├── 启动 KeepAlive (5 min REST 心跳)
          ├── 启动 ConnectionRefresher (代理令牌刷新)
-         ├── 创建 KernelConnection → WebSocket 长连接
-         └── 监听 Unix Socket → 等待 CLI 命令
+         ├── 创建 KernelConnection
+         ├── 开始 kernel.connect()（异步，可能耗时较长）
+         ├── 监听 Unix Socket ← CLI 端检测到此即认为守护进程已就绪
+         └── 等待 kernel.connect() 完成
 ```
 
 守护进程以 `detached: true` 启动，与父进程完全脱离。父进程退出后守护进程继续运行。
+
+**启动顺序说明**：Unix Socket 在 kernel 连接完成 **之前** 就开始监听。这确保了 `startDaemon()` 的 socket 轮询能快速返回，避免在 GPU runtime 冷启动时因 kernel 连接慢而误报"Daemon failed to start within timeout"。如果 exec 请求在 kernel 尚未就绪时到达，守护进程会等待 kernel 连接完成后再处理，而不是立即报错。
 
 ### 3.3 文件约定
 
@@ -207,9 +211,9 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 |---|---|
 | `runtime create` | `RuntimeManager.create()` 调用 `startDaemon(serverId)` |
 | `exec` | `DaemonClient.connect()` 检测守护进程是否运行，未运行则自动 `startDaemon()` |
-| `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel |
+| `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel。重启期间 `KernelConnection.isRestarting` 为 `true`，健康检查会跳过 |
 | `runtime destroy` | `RuntimeManager.destroy()` 调用 `stopDaemon(serverId)` (SIGTERM)，然后 unassign |
-| 守护进程 WebSocket 断开 | 健康检查（30s 间隔）发现后自动退出，下次 exec 会重启 |
+| 守护进程 WebSocket 断开 | 健康检查（30s 间隔）发现 `!isConnected && !isRestarting` 后自动退出，下次 exec 会重启 |
 | 系统重启 | PID 文件残留，`isDaemonRunning()` 通过 `kill(pid, 0)` 检测到进程不存在，清理残留文件 |
 
 ### 3.6 KernelConnection 的动态 URL
@@ -255,9 +259,10 @@ runtime-manager.ts: create()
       1. spawn 守护进程 (detached)
       2. 守护进程初始化 auth、colab client
       3. 启动 KeepAlive + ConnectionRefresher
-      4. 创建 KernelConnection → 建立 WebSocket
-      5. 监听 Unix Socket
+      4. 创建 KernelConnection，开始异步 kernel.connect()
+      5. 监听 Unix Socket（无需等待 kernel 就绪）
       6. CLI 端轮询 socket 可连接 → 返回
+      7. 守护进程继续等待 kernel.connect() 完成
 ```
 
 **nbh 参数**：notebook hash，由 `uuidToWebSafeBase64(uuid)` 生成，格式为 44 字符的 web-safe base64（替换 `-` 为 `_`，用 `.` 补齐）。
@@ -343,13 +348,17 @@ CLI: runtime restart
 
 守护进程内部:
   KernelConnection.restartKernel()
-    1. 关闭现有 WebSocket
+    0. 设置 _restarting = true（抑制健康检查误判）
+    1. 关闭现有 WebSocket（此时 isConnected 为 false）
     2. POST /api/kernels/<kernel_id>/restart（REST API，使用 getProxyUrl() 获取最新 URL）
     3. 重新建立 WebSocket 到同一 kernel_id
     4. 等待 status: idle
+    5. 恢复 _restarting = false（finally 块中执行，即使失败也会恢复）
 ```
 
 重启只杀 Python 进程，不销毁 VM。用于 `%pip install` 后重载模块。
+
+**竞态防护**：步骤 1-4 期间 `isConnected` 为 `false`，但 `isRestarting` 为 `true`。守护进程健康检查条件为 `!isConnected && !isRestarting`，因此不会在重启窗口内误杀守护进程。
 
 ---
 
@@ -464,15 +473,18 @@ kill $(cat ~/.config/colab-cli/daemon-<server-id>.pid)
 - 查看守护进程日志：`cat ~/.config/colab-cli/daemon-<server-id>.log`
 - 常见原因：auth token 过期、server 记录已失效、网络问题
 - 检查 proxy 环境变量是否正确（守护进程继承父进程的环境变量）
+- 注意：守护进程 socket 在 kernel 连接完成 **之前** 就开始监听，因此 kernel 连接慢本身不会触发此错误。如果仍然出现，说明守护进程进程本身启动失败（auth/server 问题）
 
 **exec 卡住无输出**
 - 查看守护进程日志确认 WebSocket 是否仍然连接
 - 用 `--verbose` 看守护进程连接和消息事件
 - 可能代码执行本身耗时较长（大模型推理等）
+- 如果是 `runtime create` 后立即 `exec`，属于正常等待：守护进程正在连接 kernel，exec 会在 kernel 就绪后自动开始执行
 
 **"Daemon connection closed unexpectedly"**
-- 守护进程已退出（可能 WebSocket 断开触发健康检查退出）
+- 守护进程已退出（可能非重启期间 WebSocket 意外断开触发健康检查退出）
 - 重新执行 exec 会自动重启守护进程
+- 如果出现在 `runtime restart` 期间，说明 `isRestarting` 标记逻辑可能有问题（正常情况下重启期间健康检查会跳过）
 
 ### 直接测试 Colab API
 
@@ -563,4 +575,4 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 
 ---
 
-*最后更新：2026-03-18 守护进程架构实现*
+*最后更新：2026-03-18 修复守护进程启动顺序与重启竞态*

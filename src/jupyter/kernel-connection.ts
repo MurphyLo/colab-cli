@@ -71,6 +71,7 @@ export class KernelConnection {
   private clientSessionId: string;
   private _jupyterClient?: ProxiedJupyterClient;
   private _lastProxyUrl?: string;
+  private _restarting = false;
   private messageHandlers = new Map<string, (msg: JupyterMessage) => void>();
 
   constructor(
@@ -155,22 +156,27 @@ export class KernelConnection {
   async restartKernel(): Promise<void> {
     if (!this.kernelId) return;
 
-    log.debug('Restarting kernel...');
+    this._restarting = true;
+    try {
+      log.debug('Restarting kernel...');
 
-    // Close existing websocket
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      this.ws.close();
-      this.ws = undefined;
+      // Close existing websocket
+      if (this.ws) {
+        this.ws.removeAllListeners();
+        this.ws.close();
+        this.ws = undefined;
+      }
+
+      // Restart via REST API
+      await this.jupyterClient.kernels.restart({ kernelId: this.kernelId });
+
+      // Reconnect WebSocket
+      await this.connectWebSocket();
+      await this.waitForKernelReady();
+      log.debug('Kernel restarted and reconnected');
+    } finally {
+      this._restarting = false;
     }
-
-    // Restart via REST API
-    await this.jupyterClient.kernels.restart({ kernelId: this.kernelId });
-
-    // Reconnect WebSocket
-    await this.connectWebSocket();
-    await this.waitForKernelReady();
-    log.debug('Kernel restarted and reconnected');
   }
 
   close(): void {
@@ -184,6 +190,10 @@ export class KernelConnection {
 
   get isConnected(): boolean {
     return this.ws !== undefined && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  get isRestarting(): boolean {
+    return this._restarting;
   }
 
   private async connectWebSocket(): Promise<void> {

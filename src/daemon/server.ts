@@ -127,6 +127,7 @@ function handleClient(socket: net.Socket, kernel: KernelConnection) {
   send({ type: 'ready' });
 
   const rl = readline.createInterface({ input: socket });
+  rl.on('error', () => {});
   rl.on('line', async (line) => {
     let msg: ClientMessage;
     try {

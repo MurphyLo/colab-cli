@@ -9,6 +9,7 @@ This project is a migration of the Colab runtime logic from the `colab-vscode` c
 - Creating and destroying runtimes
 - Executing Python code on an active runtime via a background daemon
 - Streaming outputs directly to the terminal
+- Querying subscription tier and Colab Compute Unit (CCU) usage
 
 ## Requirements
 
@@ -111,6 +112,21 @@ Runtime state is stored at:
 ~/.config/colab-cli/servers.json
 ```
 
+## Usage and Subscription Info
+
+Show the current account's subscription tier and Colab Compute Unit (CCU) consumption:
+
+```bash
+node --use-env-proxy dist/index.js usage
+```
+
+Output depends on the subscription tier:
+
+- **Free accounts**: shows free CCU quota remaining (in CCU, converted from milli-CCU) and the next quota refill time.
+- **Pro / Pro+ accounts**: shows the paid CCU balance instead.
+
+Both tiers always show the current hourly consumption rate based on all assigned VMs.
+
 ## Execute Code
 
 Code execution is handled by a background daemon process that maintains a persistent WebSocket connection to the Colab kernel. This allows for fast, repeated executions while preserving Python state across calls.
@@ -193,6 +209,7 @@ runtime create --accelerator <name> [--shape <shape>]
 runtime list
 runtime destroy [--endpoint <endpoint>]
 runtime restart [--endpoint <endpoint>]
+usage
 exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
 ```
 

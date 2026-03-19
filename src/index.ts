@@ -27,6 +27,7 @@ import {
   restartRuntimeCommand,
 } from './commands/runtime.js';
 import { execCommand } from './commands/exec.js';
+import { usageCommand } from './commands/usage.js';
 
 const program = new Command();
 
@@ -156,6 +157,15 @@ runtime
   .action(async (opts) => {
     await ensureLoggedIn();
     await restartRuntimeCommand(runtimeManager, opts.endpoint);
+  });
+
+// Usage command
+program
+  .command('usage')
+  .description('Show Colab subscription tier and compute unit usage')
+  .action(async () => {
+    await ensureLoggedIn();
+    await usageCommand(colabClient);
   });
 
 // Exec command

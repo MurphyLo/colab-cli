@@ -27,6 +27,7 @@ import {
   restartRuntimeCommand,
 } from './commands/runtime.js';
 import { execCommand } from './commands/exec.js';
+import { fsUploadCommand, fsDownloadCommand } from './commands/fs.js';
 import { usageCommand } from './commands/usage.js';
 
 const program = new Command();
@@ -182,6 +183,37 @@ program
       file: opts.file,
       endpoint: opts.endpoint,
       batch: opts.batch,
+    });
+  });
+
+// File system commands
+const fsCmd = program.command('fs').description('Remote filesystem operations');
+
+fsCmd
+  .command('upload <local-path>')
+  .description('Upload a file to the runtime')
+  .option('-r, --remote-path <path>', 'Remote destination path (default: content/<filename>)')
+  .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
+  .action(async (localPath, opts) => {
+    await ensureLoggedIn();
+    await fsUploadCommand(runtimeManager, {
+      localPath,
+      remotePath: opts.remotePath,
+      endpoint: opts.endpoint,
+    });
+  });
+
+fsCmd
+  .command('download <remote-path>')
+  .description('Download a file from the runtime')
+  .option('-o, --output <path>', 'Local destination path (default: ./<filename>)')
+  .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
+  .action(async (remotePath, opts) => {
+    await ensureLoggedIn();
+    await fsDownloadCommand(runtimeManager, {
+      remotePath,
+      localPath: opts.output,
+      endpoint: opts.endpoint,
     });
   });
 

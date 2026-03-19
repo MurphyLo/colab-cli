@@ -47,6 +47,7 @@ colab-cli/
 │   │   └── ephemeral.ts             # 运行时临时授权（Drive 挂载等）
 │   │
 │   ├── jupyter/
+│   │   ├── contents-client.ts       # Jupyter Contents API REST client（手写，绕过生成代码的路径编码问题）
 │   │   ├── client/
 │   │   │   ├── generated/           # OpenAPI 生成的 Jupyter REST client（复制自 colab-vscode）
 │   │   │   └── index.ts             # ProxiedJupyterClient 封装
@@ -58,10 +59,16 @@ colab-cli/
 │   │   ├── connection-refresher.ts  # 过期前 5 分钟刷新代理令牌（由守护进程运行）
 │   │   └── storage.ts               # 文件存储 (~/.config/colab-cli/servers.json)
 │   │
+│   ├── transfer/                    # 文件传输引擎
+│   │   ├── common.ts               # 共享：ConnectionProvider、常量、runPool、路径工具
+│   │   ├── upload.ts               # 上传逻辑（直接 / 分块并发 + 内核拼装）
+│   │   └── download.ts             # 下载逻辑（直接 / 分块并发 + 内核切分）
+│   │
 │   ├── commands/                    # CLI 命令实现
 │   │   ├── auth.ts                  # login / status / logout
 │   │   ├── runtime.ts               # create / list / destroy / restart
-│   │   └── exec.ts                  # 代码执行（通过守护进程）
+│   │   ├── exec.ts                  # 代码执行（通过守护进程）
+│   │   └── fs.ts                    # 文件系统操作：upload / download
 │   │
 │   ├── output/
 │   │   └── terminal-renderer.ts     # 将 Jupyter IOPub 消息渲染到终端
@@ -360,6 +367,71 @@ CLI: runtime restart
 
 **竞态防护**：步骤 1-4 期间 `isConnected` 为 `false`，但 `isRestarting` 为 `true`。守护进程健康检查条件为 `!isConnected && !isRestarting`，因此不会在重启窗口内误杀守护进程。
 
+### 4.6 文件传输流程
+
+文件传输通过 Jupyter Contents API（REST）实现，不走 WebSocket。上传和下载共享相同的策略选择和分块逻辑。
+
+**策略选择**（`transfer/common.ts: chooseStrategy()`）：
+
+| 文件大小 | 策略 | 说明 |
+|----------|------|------|
+| ≤ 20 MiB | `direct` | 单次 REST 请求（PUT/GET） |
+| 20–500 MiB | `chunked` | 分块并发传输，每块 20 MiB，最多 25 并发 |
+| > 500 MiB | `drive` | 预留接口，尚未实现（计划 Google Drive） |
+
+**为什么不用生成的 `ContentsApi`**：生成代码对整个路径做 `encodeURIComponent`，会把 `/` 编码为 `%2F`。`jupyter/contents-client.ts` 手写实现，对每个路径段分别编码。
+
+**上传流程（`transfer/upload.ts`）**：
+
+```
+fs.ts: fsUploadCommand()
+  → 检查文件大小 → chooseStrategy()
+  → direct:
+      1. 读取文件 → base64
+      2. PUT /api/contents/<path>（带重试 + 验证）
+  → chunked:
+      1. 连接 DaemonClient（用于内核拼装）
+      2. 创建远程临时目录 content/.colab-transfer-tmp/<id>/parts/
+      3. 分块读取本地文件 → base64 → 并发 PUT 到临时目录（每块带重试 + 验证）
+      4. 上传 manifest.json
+      5. 通过 daemon 执行 Python 拼装代码（shutil.copyfileobj 逐块拼接）
+      6. 验证最终文件大小
+```
+
+**下载流程（`transfer/download.ts`）**：
+
+```
+fs.ts: fsDownloadCommand()
+  → getContentsMetadata() 获取文件大小 → chooseStrategy()
+  → direct:
+      1. GET /api/contents/<path>?format=base64&type=file（带重试）
+      2. base64 解码 → 写入本地
+  → chunked:
+      1. 连接 DaemonClient（惰性连接，仅 chunked 时）
+      2. 通过 daemon 执行 Python 切分代码（将文件切为 20 MiB 块到临时目录）
+      3. 并发 GET 每个块（base64）→ 解码为 Buffer
+      4. 按序写入本地文件
+      5. 验证本地文件大小
+      6. 通过 daemon 执行 Python 清理临时目录
+```
+
+**共享基础设施（`transfer/common.ts`）**：
+
+- `ConnectionProvider` 接口：抽象 `getProxyUrl()` / `getToken()`，每次调用重新读取 `servers.json` 获取最新令牌
+- `runPool()`: 有界并发池，控制同时进行的 HTTP 请求数
+- `buildChunkPlan()`: 按固定块大小（20 MiB）切分文件
+- `ensureRemoteDirectory()` / `ensureRemoteParents()`: 远程目录创建
+- 常量：`DIRECT_LIMIT_BYTES` (20 MiB)、`DEFAULT_CHUNK_SIZE_BYTES` (20 MiB)、`DEFAULT_MAX_CONCURRENCY` (25)
+
+**实测性能**（通过代理连接 Colab）：
+
+| 场景 | 吞吐量 |
+|------|--------|
+| 上传 21 MiB (2 块并发) | ~0.53 MiB/s |
+| 上传 150 MiB (8 块并发) | ~1.15 MiB/s |
+
+并发带来明显增益，但非线性（受 Colab 代理层和网络带宽限制）。
+
 ---
 
 ## 5. 与 colab-vscode 的差异
@@ -397,6 +469,8 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 
 ### 开发路线
 
+- [ ] `fs ls` / `fs rm`：远程文件列表和删除
+- [ ] `fs upload/download` > 500 MiB：Google Drive 传输通道
 - [ ] 图片输出：`--output-dir` 参数，自动保存 PNG 到指定目录
 - [ ] stdin 透传：拦截 `input_request` 消息并转发到 `readline`
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
@@ -535,6 +609,8 @@ runtime list
 runtime destroy [--endpoint <endpoint>]
 runtime restart [--endpoint <endpoint>]
 exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
+fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
+fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 ```
 
 ### ESM 注意事项
@@ -572,7 +648,12 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `runtime/connection-refresher.ts` | `colab/connection-refresher.ts` | 大：简化为 setTimeout 链 |
 | `output/terminal-renderer.ts` | 无对应 | **全新**：终端输出渲染 |
 | `daemon/*` | 无对应 | **全新**：守护进程架构，IPC 通信 |
+| `jupyter/contents-client.ts` | `jupyter/client/generated/apis/ContentsApi.ts` | **重写**：手写 REST client，修复路径编码 |
+| `transfer/common.ts` | 无对应 | **全新**：传输共享基础设施 |
+| `transfer/upload.ts` | `colab-runtime-skill/runtime/src/upload.js` | **移植**：从 JS 移植为 TS，适配 ConnectionProvider |
+| `transfer/download.ts` | `colab-vscode/src/jupyter/contents/file-system.ts` (readFile) | **全新**：参考 readFile 的 base64 GET，新增分块并发下载 |
+| `commands/fs.ts` | 无对应 | **全新**：文件系统子命令 |
 
 ---
 
-*最后更新：2026-03-18 修复守护进程启动顺序与重启竞态*
+*最后更新：2026-03-19 新增文件传输功能（fs upload/download），支持分块并发*

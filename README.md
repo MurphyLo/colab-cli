@@ -9,6 +9,7 @@ This project is a migration of the Colab runtime logic from the `colab-vscode` c
 - Creating and destroying runtimes
 - Executing Python code on an active runtime via a background daemon
 - Streaming outputs directly to the terminal
+- Uploading and downloading files to/from the runtime filesystem
 - Querying subscription tier and Colab Compute Unit (CCU) usage
 
 ## Requirements
@@ -162,6 +163,34 @@ node --use-env-proxy dist/index.js exec -e <endpoint> "import torch; print(torch
 
 By default, `exec` uses the most recently created runtime.
 
+## File Transfer
+
+Upload and download files between the local filesystem and the runtime's `/content` directory. Files are transferred via the Jupyter Contents API with automatic chunked transfer for large files.
+
+Upload a file:
+
+```bash
+node --use-env-proxy dist/index.js fs upload ./data.csv
+node --use-env-proxy dist/index.js fs upload ./model.bin -r content/models/model.bin
+```
+
+Download a file:
+
+```bash
+node --use-env-proxy dist/index.js fs download content/results.json
+node --use-env-proxy dist/index.js fs download content/output.bin -o ./local-output.bin
+```
+
+Transfer strategy is chosen automatically based on file size:
+
+| File size | Strategy | Description |
+|-----------|----------|-------------|
+| ≤ 20 MiB | Direct | Single REST request |
+| 20–500 MiB | Chunked | Split into 20 MiB chunks, transferred concurrently (up to 25 parallel) |
+| > 500 MiB | Drive | Not yet implemented (planned: Google Drive) |
+
+For chunked uploads, chunks are uploaded to a temp directory on the runtime, then assembled via kernel execution. For chunked downloads, the file is split into chunks on the kernel, downloaded concurrently, then assembled locally.
+
 ## Runtime Naming and Shape Semantics
 
 Two different semantics are in play:
@@ -211,6 +240,8 @@ runtime destroy [--endpoint <endpoint>]
 runtime restart [--endpoint <endpoint>]
 usage
 exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
+fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
+fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 ```
 
 ## Notes

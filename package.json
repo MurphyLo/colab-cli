@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "colab-cli": "./dist/index.js"
+    "colab": "./dist/index.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node --use-env-proxy dist/index.js"
+    "start": "node --use-env-proxy dist/index.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "chalk": "^5.0.0",

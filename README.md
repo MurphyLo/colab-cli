@@ -23,47 +23,42 @@ This project is a migration of the Colab runtime logic from the `colab-vscode` c
 
 ## Install
 
+### From npm (global)
+
+```bash
+npm install -g colab-cli
+```
+
+This makes the `colab` command available globally.
+
+### From source (development)
+
 ```bash
 npm install
 npm run build
+npm link
 ```
 
-Run the built CLI with:
-
-```bash
-node dist/index.js --help
-```
-
-If you want Node to honor `HTTP_PROXY` / `HTTPS_PROXY`, use:
-
-```bash
-node --use-env-proxy dist/index.js --help
-```
-
-Or use:
-
-```bash
-npm start -- --help
-```
+After `npm link`, the `colab` command points to your local build. Run `npm run build` (or keep `npm run dev` running) to pick up code changes — no need to re-link.
 
 ## Authentication
 
 Sign in through the browser-based OAuth flow:
 
 ```bash
-node --use-env-proxy dist/index.js auth login
+colab auth login
 ```
 
 Check the current session:
 
 ```bash
-node --use-env-proxy dist/index.js auth status
+colab auth status
 ```
 
 Sign out:
 
 ```bash
-node --use-env-proxy dist/index.js auth logout
+colab auth logout
 ```
 
 Auth state is stored at:
@@ -77,34 +72,34 @@ Auth state is stored at:
 List the runtime options available to the current account:
 
 ```bash
-node --use-env-proxy dist/index.js runtime available
+colab runtime available
 ```
 
 Create a runtime by accelerator name, using Colab UI semantics:
 
 ```bash
-node --use-env-proxy dist/index.js runtime create --accelerator CPU
-node --use-env-proxy dist/index.js runtime create --accelerator T4 --shape standard
-node --use-env-proxy dist/index.js runtime create --accelerator L4 --shape highmem
-node --use-env-proxy dist/index.js runtime create --accelerator v6e-1 --shape highmem
+colab runtime create --accelerator CPU
+colab runtime create --accelerator T4 --shape standard
+colab runtime create --accelerator L4 --shape highmem
+colab runtime create --accelerator v6e-1 --shape highmem
 ```
 
 List active runtimes:
 
 ```bash
-node --use-env-proxy dist/index.js runtime list
+colab runtime list
 ```
 
 Destroy a runtime:
 
 ```bash
-node --use-env-proxy dist/index.js runtime destroy --endpoint <endpoint>
+colab runtime destroy --endpoint <endpoint>
 ```
 
 Restart the kernel without destroying the VM:
 
 ```bash
-node --use-env-proxy dist/index.js runtime restart --endpoint <endpoint>
+colab runtime restart --endpoint <endpoint>
 ```
 
 Runtime state is stored at:
@@ -118,7 +113,7 @@ Runtime state is stored at:
 Show the current account's subscription tier and Colab Compute Unit (CCU) consumption:
 
 ```bash
-node --use-env-proxy dist/index.js usage
+colab usage
 ```
 
 Output depends on the subscription tier:
@@ -135,7 +130,7 @@ Code execution is handled by a background daemon process that maintains a persis
 Run inline Python:
 
 ```bash
-node --use-env-proxy dist/index.js exec "
+colab exec "
 x = 6 * 7
 print('value:', x)
 for i in range(3):
@@ -146,19 +141,19 @@ for i in range(3):
 Run a file:
 
 ```bash
-node --use-env-proxy dist/index.js exec -f script.py
+colab exec -f script.py
 ```
 
 Run in batch mode (collects all output and prints once finished, rather than streaming):
 
 ```bash
-node --use-env-proxy dist/index.js exec -b "print('hello')"
+colab exec -b "print('hello')"
 ```
 
 If multiple runtimes exist, target one explicitly:
 
 ```bash
-node --use-env-proxy dist/index.js exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
+colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
 ```
 
 By default, `exec` uses the most recently created runtime.
@@ -170,15 +165,15 @@ Upload and download files between the local filesystem and the runtime's `/conte
 Upload a file:
 
 ```bash
-node --use-env-proxy dist/index.js fs upload ./data.csv
-node --use-env-proxy dist/index.js fs upload ./model.bin -r content/models/model.bin
+colab fs upload ./data.csv
+colab fs upload ./model.bin -r content/models/model.bin
 ```
 
 Download a file:
 
 ```bash
-node --use-env-proxy dist/index.js fs download content/results.json
-node --use-env-proxy dist/index.js fs download content/output.bin -o ./local-output.bin
+colab fs download content/results.json
+colab fs download content/output.bin -o ./local-output.bin
 ```
 
 Transfer strategy is chosen automatically based on file size:
@@ -207,13 +202,13 @@ Practical rule:
 
 ## Proxy Usage
 
-When running behind a local proxy:
+If you are behind a proxy, set `NODE_OPTIONS` so that Node.js honors proxy environment variables:
 
 ```bash
-HTTPS_PROXY=http://127.0.0.1:7897 \
-HTTP_PROXY=http://127.0.0.1:7897 \
-ALL_PROXY=http://127.0.0.1:7897 \
-node --use-env-proxy dist/index.js runtime available
+export NODE_OPTIONS=--use-env-proxy
+export HTTPS_PROXY=http://127.0.0.1:7897
+
+colab runtime available
 ```
 
 Without `--use-env-proxy`, newer Node versions will detect the proxy environment variables but will not route traffic through them automatically.
@@ -230,18 +225,18 @@ export COLAB_CLIENT_SECRET=...
 ## Command Summary
 
 ```text
-auth login
-auth status
-auth logout
-runtime available
-runtime create --accelerator <name> [--shape <shape>]
-runtime list
-runtime destroy [--endpoint <endpoint>]
-runtime restart [--endpoint <endpoint>]
-usage
-exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
-fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
-fs download <remote-path> [-o <local-path>] [-e <endpoint>]
+colab auth login
+colab auth status
+colab auth logout
+colab runtime available
+colab runtime create --accelerator <name> [--shape <shape>]
+colab runtime list
+colab runtime destroy [--endpoint <endpoint>]
+colab runtime restart [--endpoint <endpoint>]
+colab usage
+colab exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
+colab fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
+colab fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 ```
 
 ## Notes

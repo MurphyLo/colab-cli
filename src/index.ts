@@ -7,8 +7,7 @@ if (
 ) {
   console.warn(
     '[warn] Proxy environment variable detected but --use-env-proxy is not enabled.\n' +
-    '       Run with: node --use-env-proxy dist/index.js\n' +
-    '       Or use:   npm start (which includes this flag automatically)\n',
+    '       Set NODE_OPTIONS=--use-env-proxy before running colab.\n',
   );
 }
 

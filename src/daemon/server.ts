@@ -29,8 +29,25 @@ function cleanupFiles() {
   try { fs.unlinkSync(PID_FILE); } catch {}
 }
 
+function isSocketAlive(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const client = net.connect(socketPath, () => {
+      client.destroy();
+      resolve(true);
+    });
+    client.on('error', () => resolve(false));
+  });
+}
+
 async function main() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
+
+  // Defense-in-depth: exit if another daemon is already serving this socket
+  if (await isSocketAlive(SOCKET_PATH)) {
+    console.log('Another daemon is already serving, exiting');
+    process.exit(0);
+  }
+
   fs.writeFileSync(PID_FILE, String(process.pid));
 
   // Clean stale socket
@@ -94,6 +111,13 @@ async function main() {
   const socketServer = net.createServer((socket) =>
     handleClient(socket, kernel, kernelReady),
   );
+
+  socketServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log('Socket already in use by another daemon, exiting');
+      process.exit(0);
+    }
+  });
 
   socketServer.listen(SOCKET_PATH, () => {
     fs.chmodSync(SOCKET_PATH, 0o600);

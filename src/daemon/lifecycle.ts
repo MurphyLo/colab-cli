@@ -22,6 +22,10 @@ function getLogPath(serverId: UUID): string {
   return path.join(CONFIG_DIR, `daemon-${serverId}.log`);
 }
 
+function getLockPath(serverId: UUID): string {
+  return path.join(CONFIG_DIR, `daemon-${serverId}.lock`);
+}
+
 export function isDaemonRunning(serverId: UUID): boolean {
   const pidPath = getPidPath(serverId);
   try {
@@ -39,12 +43,100 @@ function cleanupStaleFiles(serverId: UUID): void {
   try { fs.unlinkSync(getSocketPath(serverId)); } catch {}
 }
 
+/** In-process dedup: coalesce concurrent startDaemon calls for the same server. */
+const pendingStarts = new Map<string, Promise<void>>();
+
 export async function startDaemon(serverId: UUID): Promise<void> {
+  const pending = pendingStarts.get(serverId);
+  if (pending) {
+    await pending;
+    return;
+  }
+
+  const promise = startDaemonWithLock(serverId);
+  pendingStarts.set(serverId, promise);
+  try {
+    await promise;
+  } finally {
+    pendingStarts.delete(serverId);
+  }
+}
+
+/**
+ * Acquire a cross-process lock (atomic mkdir), then spawn the daemon if needed.
+ * If another process holds the lock, wait until the daemon is reachable or the
+ * lock is released.
+ */
+async function startDaemonWithLock(serverId: UUID): Promise<void> {
   if (isDaemonRunning(serverId)) {
     log.debug('Daemon already running for', serverId);
     return;
   }
 
+  const lockPath = getLockPath(serverId);
+  const maxWait = 30_000;
+  const start = Date.now();
+
+  while (Date.now() - start < maxWait) {
+    if (tryAcquireLock(lockPath)) {
+      try {
+        // Re-check under lock — another process may have started the daemon
+        if (isDaemonRunning(serverId)) {
+          log.debug('Daemon already running for', serverId);
+          return;
+        }
+        return await spawnAndWait(serverId);
+      } finally {
+        releaseLock(lockPath);
+      }
+    }
+
+    // Lock held by another process — it's starting the daemon.
+    // Wait for the daemon to become reachable or the lock to be released.
+    if (await canConnect(getSocketPath(serverId))) return;
+    await sleep(200);
+  }
+
+  throw new Error(
+    'Timed out waiting to start daemon. Check logs at: ' +
+      getLogPath(serverId),
+  );
+}
+
+function tryAcquireLock(lockPath: string): boolean {
+  try {
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, 'pid'), String(process.pid));
+    return true;
+  } catch (err: any) {
+    if (err.code !== 'EEXIST') return false;
+    // Lock dir exists — check if the holder is still alive
+    try {
+      const pid = parseInt(
+        fs.readFileSync(path.join(lockPath, 'pid'), 'utf-8').trim(),
+        10,
+      );
+      process.kill(pid, 0); // throws if dead
+      return false; // holder is alive
+    } catch {
+      // Stale lock — previous holder died without cleanup
+      try {
+        fs.rmSync(lockPath, { recursive: true });
+        fs.mkdirSync(lockPath);
+        fs.writeFileSync(path.join(lockPath, 'pid'), String(process.pid));
+        return true;
+      } catch {
+        return false; // another process cleaned it up first
+      }
+    }
+  }
+}
+
+function releaseLock(lockPath: string): void {
+  try { fs.rmSync(lockPath, { recursive: true }); } catch {}
+}
+
+async function spawnAndWait(serverId: UUID): Promise<void> {
   log.debug('Starting daemon for', serverId);
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
 

@@ -8,9 +8,14 @@ export class LoopbackServer {
   private listen?: Promise<number>;
   private readonly server: http.Server;
   private isDisposed = false;
+  private readonly sockets = new Set<http.IncomingMessage['socket']>();
 
   constructor(private readonly handler: LoopbackHandler) {
     this.server = http.createServer();
+    this.server.on('connection', (socket) => {
+      this.sockets.add(socket);
+      socket.on('close', () => this.sockets.delete(socket));
+    });
     this.server.on('request', (req, res) => {
       handler.handleRequest(req, res);
     });
@@ -19,6 +24,10 @@ export class LoopbackServer {
   dispose(): void {
     if (this.isDisposed) return;
     this.isDisposed = true;
+    for (const socket of this.sockets) {
+      socket.destroy();
+    }
+    this.sockets.clear();
     if (!this.server.listening) return;
     this.server.close();
   }

@@ -1,15 +1,4 @@
-#!/usr/bin/env node
-
-// Warn if proxy env vars are set but --use-env-proxy is not enabled (Node.js 22+)
-if (
-  (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy) &&
-  !process.execArgv.includes('--use-env-proxy')
-) {
-  console.warn(
-    '[warn] Proxy environment variable detected but --use-env-proxy is not enabled.\n' +
-    '       Set NODE_OPTIONS=--use-env-proxy before running colab.\n',
-  );
-}
+#!/usr/bin/env -S node --use-env-proxy --disable-warning=UNDICI-EHPA
 
 import { Command } from 'commander';
 import { COLAB_API_DOMAIN, COLAB_GAPI_DOMAIN, OAUTH_CLIENT_ID } from './config.js';

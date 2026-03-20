@@ -292,6 +292,7 @@ export class ColabClient {
 
     let response: Response | undefined;
     const requestHeaders = new Headers(init.headers as HeadersInit);
+    requestHeaders.set('User-Agent', 'node');
     requestHeaders.set(ACCEPT_JSON_HEADER.key, ACCEPT_JSON_HEADER.value);
     requestHeaders.set(COLAB_CLIENT_AGENT_HEADER.key, COLAB_CLIENT_AGENT_HEADER.value);
     requestHeaders.set(COLAB_VS_CODE_APP_NAME.key, COLAB_VS_CODE_APP_NAME.value);

@@ -79,6 +79,7 @@ export class KernelConnection {
     private readonly getToken: () => string,
     private readonly colabClient: ColabClient,
     private readonly endpoint: string,
+    private readonly requestEphemeralAuth?: (authType: AuthType) => Promise<void>,
   ) {
     this.clientSessionId = uuid();
   }
@@ -281,20 +282,23 @@ export class KernelConnection {
   }
 
   private handleEphemeralAuth(authType: string, colabMsgId: number): void {
-    // Propagate credentials in background
-    import('../auth/ephemeral.js').then(({ handleEphemeralAuth }) => {
-      handleEphemeralAuth(this.colabClient, this.endpoint, authType as AuthType)
-        .then(() => {
-          this.sendInputReply(colabMsgId);
-        })
-        .catch((err: unknown) => {
-          log.error('Ephemeral auth failed:', err);
-          this.sendInputReply(
-            colabMsgId,
-            err instanceof Error ? err.message : 'unknown error',
-          );
-        });
-    });
+    const executeAuth = this.requestEphemeralAuth
+      ? this.requestEphemeralAuth(authType as AuthType)
+      : import('../auth/ephemeral.js').then(({ handleEphemeralAuth }) =>
+        handleEphemeralAuth(this.colabClient, this.endpoint, authType as AuthType),
+      );
+
+    executeAuth
+      .then(() => {
+        this.sendInputReply(colabMsgId);
+      })
+      .catch((err: unknown) => {
+        log.error('Ephemeral auth failed:', err);
+        this.sendInputReply(
+          colabMsgId,
+          err instanceof Error ? err.message : 'unknown error',
+        );
+      });
   }
 
   private sendInputReply(colabMsgId: number, error?: string): void {

@@ -186,6 +186,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 
 ```jsonl
 {"type": "exec", "code": "print('hello')"}
+{"type": "auth_response", "requestId": "<uuid>", "error": "optional error"}
 {"type": "interrupt"}
 {"type": "restart"}
 {"type": "ping"}
@@ -195,6 +196,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 
 ```jsonl
 {"type": "ready"}
+{"type": "auth_required", "requestId": "<uuid>", "authType": "dfs_ephemeral"}
 {"type": "output", "output": {"type": "stream", "name": "stdout", "text": "hello\n"}}
 {"type": "exec_done"}
 {"type": "exec_error", "message": "..."}
@@ -208,9 +210,11 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 1. CLI 连接 Unix Socket
 2. 守护进程发送 `ready`
 3. CLI 发送 `exec` 请求
-4. 守护进程逐条发送 `output` 消息（流式）
-5. 守护进程发送 `exec_done` 或 `exec_error`
-6. CLI 断开（守护进程继续运行）
+4. 如果 kernel 在执行期间触发 `request_auth`（如 `drive.mount()`），守护进程发送 `auth_required`
+5. CLI 前台进程负责浏览器/OAuth 交互，并回送 `auth_response`
+6. 守护进程继续逐条发送 `output` 消息（流式）
+7. 守护进程发送 `exec_done` 或 `exec_error`
+8. CLI 断开（守护进程继续运行）
 
 ### 3.5 生命周期管理
 
@@ -339,11 +343,18 @@ exec.ts: execCommand()
 ```
 1. Runtime 发送 colab_request (msg_type='colab_request', metadata.colab_request_type='request_auth')
 2. 守护进程内的 KernelConnection 拦截该消息
-3. 调用 ColabClient.propagateCredentials(endpoint, { authType, dryRun: true })
-4. 如果已授权 → 直接 propagate (dryRun: false)
-5. 如果未授权 → 提示用户在浏览器中完成授权 → 再 propagate
-6. 发送 input_reply (content.value.type='colab_reply', content.value.colab_msg_id=<id>)
+3. 守护进程通过 Unix Socket 向前台 CLI 发送 `auth_required { requestId, authType }`
+4. 前台 CLI 调用 `auth/ephemeral.ts`
+   4.1 `propagateCredentials(endpoint, { authType, dryRun: true })`
+   4.2 如果已授权 → 直接 `propagateCredentials(..., dryRun: false)`
+   4.3 如果未授权 → 在终端提示用户，并以与 `auth login` 一致的格式打印 URL / 打开浏览器
+   4.4 用户在浏览器完成 OAuth 后，前台 CLI 执行 `propagateCredentials(..., dryRun: false)`
+5. 前台 CLI 通过 Unix Socket 回送 `auth_response { requestId, error? }`
+6. 守护进程收到 `auth_response` 后，向 kernel 发送 `input_reply`
+   content.value.type='colab_reply', content.value.colab_msg_id=<id>
 ```
+
+**设计原因**：守护进程是 `detached` 后台进程，不能可靠地直接占用当前终端做交互，也不能在沙箱环境里稳定拉起本机 GUI 浏览器。因此 `drive.mount()` 的授权提示必须由前台 CLI 进程承接，守护进程只负责检测 kernel 的 `request_auth` 并转发。
 
 ### 4.5 内核重启
 
@@ -463,7 +474,8 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 
 1. **图片输出**：`display_data` 中的 `image/png` 只打印占位符，未实现保存到文件。
 2. **多 runtime**：虽然支持存储多个 server（每个 server 有独立的守护进程），但 `exec` 默认只用最新的一个。
-3. **stdin 支持**：Python 的 `input()` 函数的 stdin 请求尚未实现转发到终端。
+3. **stdin 支持**：通用的 Python `input()` / `input_request` 透传尚未实现。
+   例外：Colab 自定义的 `request_auth`（`drive.mount()` / 临时 Google 凭据传播）已经通过 `auth_required` / `auth_response` 专门支持。
 4. **守护进程自动重连**：WebSocket 断开后守护进程直接退出，依赖下次 exec 自动重启。未实现进程内重连。
 5. **并发 exec**：守护进程按 socket 连接串行处理请求。Jupyter kernel 本身也是串行执行，但多客户端同时连接时行为未定义。
 
@@ -641,7 +653,7 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `auth/loopback-server.ts` | `common/loopback-server.ts` | 微小：去掉 vscode.Disposable |
 | `auth/loopback-flow.ts` | `auth/flows/loopback.ts` | 大：重写，合并 CodeManager + flow 逻辑 |
 | `auth/auth-manager.ts` | `auth/auth-provider.ts` | 大：重写，去掉 vscode.authentication API |
-| `auth/ephemeral.ts` | `auth/ephemeral.ts` | 中等：用 readline 替代 vscode.window |
+| `auth/ephemeral.ts` | `auth/ephemeral.ts` | 中等：前台 CLI 交互 + readline，输出格式与 `auth login` 对齐 |
 | `jupyter/client/index.ts` | `jupyter/client/index.ts` | 中等：去掉 vscode.Uri/Event，简化为 kernels+sessions |
 | `jupyter/client/generated/` | `jupyter/client/generated/` | 无改动（只加 .js 后缀） |
 | `jupyter/kernel-connection.ts` | 无对应 | **全新**：核心组件，实现 Jupyter 线协议 |
@@ -658,4 +670,4 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 
 ---
 
-*最后更新：2026-03-19 新增文件传输功能（fs upload/download），支持分块并发*
+*最后更新：2026-03-20 同步 Drive 挂载前台授权链路（daemon 转发 `request_auth` 到 CLI）与交互文案格式*

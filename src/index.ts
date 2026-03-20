@@ -166,7 +166,7 @@ program
   .option('-b, --batch', 'Collect all output and print at once instead of streaming')
   .action(async (code, opts) => {
     await ensureLoggedIn();
-    await execCommand(runtimeManager, {
+    await execCommand(runtimeManager, colabClient, {
       code,
       file: opts.file,
       endpoint: opts.endpoint,

@@ -1,6 +1,7 @@
 import net from 'net';
 import readline from 'readline';
 import { UUID } from 'crypto';
+import type { AuthType } from '../colab/api.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import type { ClientMessage, ServerMessage } from './protocol.js';
 import { encode } from './protocol.js';
@@ -52,16 +53,47 @@ export class DaemonClient {
     }
   }
 
-  async *exec(code: string): AsyncGenerator<KernelOutput> {
+  async *exec(
+    code: string,
+    options?: {
+      handleEphemeralAuth?: (authType: AuthType) => Promise<void>;
+    },
+  ): AsyncGenerator<KernelOutput> {
     this.send({ type: 'exec', code });
     while (true) {
       const msg = await this.nextMessage();
-      if (msg.type === 'output') {
-        yield msg.output;
-      } else if (msg.type === 'exec_done') {
-        return;
-      } else if (msg.type === 'exec_error') {
-        throw new Error(msg.message);
+      switch (msg.type) {
+        case 'auth_required': {
+          let error: string | undefined;
+          try {
+            if (!options?.handleEphemeralAuth) {
+              throw new Error('No foreground auth handler configured for this exec session');
+            }
+            await options.handleEphemeralAuth(msg.authType);
+          } catch (err) {
+            error = err instanceof Error ? err.message : String(err);
+          }
+
+          this.send({
+            type: 'auth_response',
+            requestId: msg.requestId,
+            ...(error ? { error } : {}),
+          });
+          break;
+        }
+
+        case 'output':
+          yield msg.output;
+          break;
+
+        case 'exec_done':
+          return;
+
+        case 'exec_error':
+          throw new Error(msg.message);
+
+        default:
+          break;
       }
     }
   }

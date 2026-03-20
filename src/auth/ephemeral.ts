@@ -8,6 +8,7 @@ export async function handleEphemeralAuth(
   apiClient: ColabClient,
   endpoint: string,
   authType: AuthType,
+  serverLabel?: string,
 ): Promise<void> {
   const dryRunResult = await apiClient.propagateCredentials(endpoint, {
     authType,
@@ -18,7 +19,11 @@ export async function handleEphemeralAuth(
   if (dryRunResult.success) {
     await propagateCredentials(apiClient, endpoint, authType);
   } else if (dryRunResult.unauthorizedRedirectUri) {
-    const consent = await promptUserConsent(authType, dryRunResult.unauthorizedRedirectUri);
+    const consent = await promptUserConsent(
+      authType,
+      dryRunResult.unauthorizedRedirectUri,
+      serverLabel,
+    );
     if (!consent) {
       throw new Error(`User cancelled ${authType} authorization`);
     }
@@ -33,28 +38,47 @@ export async function handleEphemeralAuth(
 async function promptUserConsent(
   authType: AuthType,
   unauthorizedRedirectUri: string,
+  serverLabel?: string,
 ): Promise<boolean> {
   let message: string;
+  let detail: string;
+  const label = serverLabel ?? 'this runtime';
   switch (authType) {
     case AuthType.DFS_EPHEMERAL:
-      message = 'The runtime is requesting access to your Google Drive files.';
+      message = `Permit "${label}" to access your Google Drive files?`;
+      detail =
+        'Granting access to Google Drive allows code executed in this runtime to modify files in your Google Drive.';
       break;
     case AuthType.AUTH_USER_EPHEMERAL:
-      message = 'The runtime is requesting access to your Google credentials.';
+      message = `Allow "${label}" to access your Google credentials?`;
+      detail =
+        'This allows code executed in this runtime to access your Google Drive and Google Cloud data.';
       break;
     default:
       throw new Error(`Unsupported auth type: ${String(authType)}`);
   }
 
   console.log(`\n${message}`);
+  console.log(detail);
   const answer = await askQuestion('Allow? (y/n): ');
   if (answer.toLowerCase() !== 'y') {
     return false;
   }
 
-  await open(unauthorizedRedirectUri);
-  console.log('Please complete authorization in your browser.');
-  const done = await askQuestion('Press Enter when done...');
+  try {
+    console.log('Opening browser for Google authorization...');
+    console.log(
+      `\nIf the browser did not open, visit this URL to continue:\n${unauthorizedRedirectUri}\n`,
+    );
+    await open(unauthorizedRedirectUri);
+  } catch (err) {
+    log.warn('Failed to open browser automatically:', err);
+    console.log(
+      `\nIf the browser did not open, visit this URL to continue:\n${unauthorizedRedirectUri}\n`,
+    );
+  }
+
+  await askQuestion('Press Enter after authorization is complete...');
   return true;
 }
 

@@ -4,8 +4,9 @@ import net from 'net';
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
-import { UUID } from 'crypto';
+import { randomUUID, UUID } from 'crypto';
 import { AuthManager } from '../auth/auth-manager.js';
+import { AuthType } from '../colab/api.js';
 import { ColabClient } from '../colab/client.js';
 import { KernelConnection } from '../jupyter/kernel-connection.js';
 import { KeepAlive } from '../runtime/keep-alive.js';
@@ -37,6 +38,11 @@ function isSocketAlive(socketPath: string): Promise<boolean> {
     });
     client.on('error', () => resolve(false));
   });
+}
+
+interface ExecContext {
+  socket: net.Socket;
+  pendingAuthRequests: Map<string, (error?: string) => void>;
 }
 
 async function main() {
@@ -92,12 +98,41 @@ async function main() {
   );
   refresher.start();
 
+  const execState: { activeExecContext?: ExecContext } = {};
+
+  const requestEphemeralAuth = async (authType: AuthType): Promise<void> => {
+    const execContext = execState.activeExecContext;
+    if (!execContext || execContext.socket.destroyed) {
+      throw new Error(
+        'Foreground CLI session is unavailable to complete Google Drive authorization',
+      );
+    }
+
+    const requestId = randomUUID();
+    const result = await new Promise<string | undefined>((resolve) => {
+      execContext.pendingAuthRequests.set(requestId, resolve);
+      if (execContext.socket.destroyed) {
+        execContext.pendingAuthRequests.delete(requestId);
+        resolve('Foreground CLI session closed before authorization completed');
+        return;
+      }
+      execContext.socket.write(
+        encode({ type: 'auth_required', requestId, authType }),
+      );
+    });
+
+    if (result) {
+      throw new Error(result);
+    }
+  };
+
   // Create kernel (connect later, after socket is listening)
   const kernel = new KernelConnection(
     () => refresher.proxyUrl,
     () => refresher.token,
     colabClient,
     server.endpoint,
+    requestEphemeralAuth,
   );
 
   // Begin kernel connection (may be slow on cold-start GPU runtimes).
@@ -109,7 +144,7 @@ async function main() {
 
   // Start Unix socket server early so CLI detects daemon quickly
   const socketServer = net.createServer((socket) =>
-    handleClient(socket, kernel, kernelReady),
+    handleClient(socket, kernel, kernelReady, execState),
   );
 
   socketServer.on('error', (err: NodeJS.ErrnoException) => {
@@ -154,12 +189,20 @@ function handleClient(
   socket: net.Socket,
   kernel: KernelConnection,
   kernelReady: Promise<void>,
+  execState: {
+    activeExecContext?: ExecContext;
+  },
 ) {
   const send = (msg: ServerMessage) => {
     if (!socket.destroyed) socket.write(encode(msg));
   };
 
   send({ type: 'ready' });
+
+  const execContext: ExecContext = {
+    socket,
+    pendingAuthRequests: new Map(),
+  };
 
   const rl = readline.createInterface({ input: socket });
   rl.on('error', () => {});
@@ -173,7 +216,16 @@ function handleClient(
 
     switch (msg.type) {
       case 'exec': {
+        if (execState.activeExecContext && execState.activeExecContext !== execContext) {
+          send({
+            type: 'exec_error',
+            message: 'Daemon is already executing code for another CLI session',
+          });
+          return;
+        }
+
         try {
+          execState.activeExecContext = execContext;
           // Wait for kernel to be ready if still connecting at startup
           await kernelReady;
           if (!kernel.isConnected) {
@@ -193,7 +245,20 @@ function handleClient(
             type: 'exec_error',
             message: err instanceof Error ? err.message : String(err),
           });
+        } finally {
+          if (execState.activeExecContext === execContext) {
+            execState.activeExecContext = undefined;
+          }
         }
+        break;
+      }
+      case 'auth_response': {
+        const resolve = execContext.pendingAuthRequests.get(msg.requestId);
+        if (!resolve) {
+          return;
+        }
+        execContext.pendingAuthRequests.delete(msg.requestId);
+        resolve(msg.error);
         break;
       }
       case 'interrupt':
@@ -217,7 +282,16 @@ function handleClient(
   });
 
   socket.on('error', () => {});
-  socket.on('close', () => rl.close());
+  socket.on('close', () => {
+    for (const resolve of execContext.pendingAuthRequests.values()) {
+      resolve('Foreground CLI session closed before authorization completed');
+    }
+    execContext.pendingAuthRequests.clear();
+    if (execState.activeExecContext === execContext) {
+      execState.activeExecContext = undefined;
+    }
+    rl.close();
+  });
 }
 
 main().catch((err) => {

@@ -1,5 +1,7 @@
 import fs from 'fs';
 import ora from 'ora';
+import { ColabClient } from '../colab/client.js';
+import { handleEphemeralAuth } from '../auth/ephemeral.js';
 import { DaemonClient } from '../daemon/client.js';
 import { renderOutput, renderStream } from '../output/terminal-renderer.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -7,6 +9,7 @@ import type { KernelOutput } from '../jupyter/kernel-connection.js';
 
 export async function execCommand(
   runtimeManager: RuntimeManager,
+  colabClient: ColabClient,
   options: {
     code?: string;
     file?: string;
@@ -43,7 +46,11 @@ export async function execCommand(
   }
 
   try {
-    const outputs = client.exec(code);
+    const outputs = client.exec(code, {
+      handleEphemeralAuth: async (authType) => {
+        await handleEphemeralAuth(colabClient, server.endpoint, authType, server.label);
+      },
+    });
     if (options.batch) {
       const collected: KernelOutput[] = [];
       for await (const output of outputs) {

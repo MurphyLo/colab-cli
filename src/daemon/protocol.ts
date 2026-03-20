@@ -1,13 +1,16 @@
+import type { AuthType } from '../colab/api.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 
 export type ClientMessage =
   | { type: 'exec'; code: string }
+  | { type: 'auth_response'; requestId: string; error?: string }
   | { type: 'interrupt' }
   | { type: 'restart' }
   | { type: 'ping' };
 
 export type ServerMessage =
   | { type: 'ready' }
+  | { type: 'auth_required'; requestId: string; authType: AuthType }
   | { type: 'output'; output: KernelOutput }
   | { type: 'exec_done' }
   | { type: 'exec_error'; message: string }

@@ -158,6 +158,10 @@ colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
 
 By default, `exec` uses the most recently created runtime.
 
+If executed code triggers `drive.mount('/content/drive')` or another ephemeral
+Google credential request, the foreground CLI session will prompt for consent,
+open the browser-based OAuth flow, and continue once authorization is complete.
+
 ## File Transfer
 
 Upload and download files between the local filesystem and the runtime's `/content` directory. Files are transferred via the Jupyter Contents API with automatic chunked transfer for large files.

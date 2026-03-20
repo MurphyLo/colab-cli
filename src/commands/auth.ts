@@ -8,9 +8,14 @@ export async function loginCommand(authManager: AuthManager): Promise<void> {
     return;
   }
 
-  const spinner = ora('Opening browser for Google sign-in...').start();
+  const spinner = ora('Waiting for Google sign-in...').start();
   try {
-    const user = await authManager.login();
+    const user = await authManager.login((url) => {
+      spinner.stop();
+      console.log('Opening browser for Google sign-in...');
+      console.log(`\nIf the browser did not open, visit this URL to sign in:\n${url}\n`);
+      spinner.start('Waiting for authentication...');
+    });
     spinner.succeed(`Signed in as ${user.name} (${user.email})`);
   } catch (err) {
     spinner.fail('Sign-in failed');

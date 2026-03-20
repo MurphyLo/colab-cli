@@ -14,6 +14,7 @@ interface FlowResult {
 export async function runLoopbackFlow(
   oAuth2Client: OAuth2Client,
   scopes: string[],
+  onAuthUrl?: (url: string) => void,
 ): Promise<FlowResult> {
   const pkce = await oAuth2Client.generateCodeVerifierAsync();
   const nonce = crypto.randomUUID();
@@ -73,6 +74,7 @@ export async function runLoopbackFlow(
       code_challenge: pkce.codeChallenge,
     });
 
+    onAuthUrl?.(authUrl);
     await open(authUrl);
 
     const timeout = setTimeout(() => {

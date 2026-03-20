@@ -75,10 +75,10 @@ export class AuthManager {
     return this.session.accessToken;
   }
 
-  async login(): Promise<{ name: string; email: string }> {
+  async login(onAuthUrl?: (url: string) => void): Promise<{ name: string; email: string }> {
     const scopes = [...REQUIRED_SCOPES].sort();
 
-    await runLoopbackFlow(this.oAuth2Client, scopes);
+    await runLoopbackFlow(this.oAuth2Client, scopes, onAuthUrl);
 
     const accessToken = this.oAuth2Client.credentials.access_token;
     const refreshToken = this.oAuth2Client.credentials.refresh_token;

@@ -192,12 +192,7 @@ For chunked uploads, chunks are uploaded to a temp directory on the runtime, the
 
 ## Runtime Naming and Shape Semantics
 
-Two different semantics are in play:
-
-- `runtime available` uses Colab UI-oriented naming such as `GPU H100`, `GPU L4`, `TPU v6e-1`
-- `runtime list` shows the active assignments returned by the backend, including the backend machine shape
-
-This matters for high-memory-only accelerators. For example, `L4`, `H100`, `G4`, `v6e-1`, and `v5e-1` are treated as `High-RAM` in CLI input semantics, but the backend may still report them as `Standard` in assignment listings.
+All three runtime subcommands (`available`, `create`, `list`) use consistent Colab UI-oriented shape semantics. High-memory-only accelerators (`H100`, `G4`, `L4`, `v6e-1`, `v5e-1`) are always displayed as `High-RAM`, regardless of the raw backend value.
 
 Practical rule:
 

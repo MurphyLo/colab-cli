@@ -113,7 +113,9 @@ export async function listRuntimesCommand(
     console.log(chalk.bold('\nActive Runtimes:'));
     for (const a of assignments) {
       const type = variantToMachineType(a.variant);
-      const shape = shapeToMachineShape(a.machineShape);
+      const displayShape =
+        isHighMemOnlyAccelerator(a.accelerator) ? Shape.HIGHMEM : a.machineShape;
+      const shape = shapeToMachineShape(displayShape);
       const accel =
         a.accelerator && a.accelerator !== 'NONE'
           ? ` ${a.accelerator}`

@@ -21,7 +21,7 @@
 node --use-env-proxy dist/index.js runtime create --accelerator L4
 ```
 
-L4 属于 high-mem-only 加速器，CLI 会自动使用 `--shape highmem`。
+L4 属于 high-mem-only 加速器，CLI 会自动使用 `--shape high-ram`。
 
 ## 2. 安装 Python 依赖
 

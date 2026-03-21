@@ -24,7 +24,6 @@ export async function createRuntimeCommand(
 
   let shape: Shape | undefined;
   switch (options.shape?.toLowerCase()) {
-    case 'highmem':
     case 'high-ram':
       shape = Shape.HIGHMEM;
       break;
@@ -36,7 +35,7 @@ export async function createRuntimeCommand(
       break;
     default:
       console.error(
-        `Unknown shape: ${options.shape}. Use standard, highmem, or high-ram.`,
+        `Unknown shape: ${options.shape}. Use standard or high-ram.`,
       );
       process.exit(1);
   }

@@ -139,7 +139,7 @@ export class RuntimeManager {
 
     if (requestedShape === Shape.STANDARD) {
       throw new Error(
-        `${variantToMachineType(variant)} ${accelerator} only supports ${shapeToMachineShape(Shape.HIGHMEM)} in CLI semantics. Use --shape highmem or omit --shape.`,
+        `${variantToMachineType(variant)} ${accelerator} only supports ${shapeToMachineShape(Shape.HIGHMEM)} in CLI semantics. Use --shape high-ram or omit --shape.`,
       );
     }
 

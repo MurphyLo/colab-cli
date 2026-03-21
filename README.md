@@ -80,8 +80,8 @@ Create a runtime by accelerator name, using Colab UI semantics:
 ```bash
 colab runtime create --accelerator CPU
 colab runtime create --accelerator T4 --shape standard
-colab runtime create --accelerator L4 --shape highmem
-colab runtime create --accelerator v6e-1 --shape highmem
+colab runtime create --accelerator L4 --shape high-ram
+colab runtime create --accelerator v6e-1 --shape high-ram
 ```
 
 List active runtimes:
@@ -196,7 +196,7 @@ All three runtime subcommands (`available`, `create`, `list`) use consistent Col
 
 Practical rule:
 
-- Use `--shape highmem` or omit `--shape` for those accelerators
+- Use `--shape high-ram` or omit `--shape` for those accelerators
 - Do not use `--shape standard` for them
 
 ## Proxy Usage

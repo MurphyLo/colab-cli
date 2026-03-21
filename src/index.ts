@@ -107,7 +107,7 @@ runtime
   )
   .option(
     '-s, --shape <shape>',
-    'Machine shape in Colab UI semantics: standard, highmem, or high-ram',
+    'Machine shape: standard or high-ram',
   )
   .action(async (opts) => {
     await ensureLoggedIn();

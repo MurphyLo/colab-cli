@@ -605,7 +605,7 @@ npm run dev          # watch 模式编译
 
 ./dist/index.js --help         # 运行
 ./dist/index.js auth login     # 登录
-./dist/index.js runtime create --accelerator H100 --shape highmem
+./dist/index.js runtime create --accelerator H100 --shape high-ram
 ./dist/index.js exec "import torch; print(torch.cuda.is_available())"
 ./dist/index.js exec -f script.py          # 执行文件
 ./dist/index.js exec -b "print('hello')"   # --batch 模式（收集所有输出后一次性打印）

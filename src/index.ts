@@ -17,6 +17,15 @@ import {
 import { execCommand } from './commands/exec.js';
 import { fsUploadCommand, fsDownloadCommand } from './commands/fs.js';
 import { usageCommand } from './commands/usage.js';
+import {
+  driveListCommand,
+  driveUploadCommand,
+  driveDownloadCommand,
+  driveMkdirCommand,
+  driveDeleteCommand,
+  driveMoveCommand,
+} from './commands/drive.js';
+import { DriveAuthManager } from './drive/auth.js';
 
 const program = new Command();
 
@@ -203,6 +212,72 @@ fsCmd
       localPath: opts.output,
       endpoint: opts.endpoint,
     });
+  });
+
+// Drive commands (uses separate OAuth credentials — no Colab login required)
+let driveAuth: DriveAuthManager;
+
+async function ensureDriveAuth(): Promise<DriveAuthManager> {
+  if (!driveAuth) {
+    driveAuth = new DriveAuthManager();
+    await driveAuth.ensureAuthorized();
+  }
+  return driveAuth;
+}
+
+const drive = program.command('drive').description('Google Drive operations');
+
+drive
+  .command('list [folder-id]')
+  .description('List files in a Drive folder (default: root)')
+  .action(async (folderId) => {
+    const da = await ensureDriveAuth();
+    await driveListCommand(da, folderId);
+  });
+
+drive
+  .command('upload <local-path>')
+  .description('Upload a file to Google Drive (resumable for large files)')
+  .option('-p, --parent <folder-id>', 'Parent folder ID (default: root)')
+  .action(async (localPath, opts) => {
+    const da = await ensureDriveAuth();
+    await driveUploadCommand(da, localPath, opts);
+  });
+
+drive
+  .command('download <file-id>')
+  .description('Download a file from Google Drive')
+  .option('-o, --output <path>', 'Local output path')
+  .action(async (fileId, opts) => {
+    const da = await ensureDriveAuth();
+    await driveDownloadCommand(da, fileId, opts);
+  });
+
+drive
+  .command('mkdir <name>')
+  .description('Create a folder in Drive')
+  .option('-p, --parent <folder-id>', 'Parent folder ID (default: root)')
+  .action(async (name, opts) => {
+    const da = await ensureDriveAuth();
+    await driveMkdirCommand(da, name, opts.parent);
+  });
+
+drive
+  .command('delete <file-id>')
+  .description('Delete a file or folder from Drive')
+  .option('--permanent', 'Permanently delete instead of moving to trash')
+  .action(async (fileId, opts) => {
+    const da = await ensureDriveAuth();
+    await driveDeleteCommand(da, fileId, opts);
+  });
+
+drive
+  .command('move <file-id>')
+  .description('Move a file to another Drive folder')
+  .requiredOption('--to <folder-id>', 'Destination folder ID')
+  .action(async (fileId, opts) => {
+    const da = await ensureDriveAuth();
+    await driveMoveCommand(da, fileId, opts.to);
   });
 
 // Graceful shutdown (daemons are independent processes and keep running)

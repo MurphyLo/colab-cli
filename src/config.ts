@@ -14,6 +14,17 @@ export const REQUIRED_SCOPES = [
   'https://www.googleapis.com/auth/colaboratory',
 ] as const;
 
+// Drive uses a separate OAuth client (rclone's public credentials)
+// because the Colab extension's OAuth client doesn't have Drive API access.
+export const DRIVE_CLIENT_ID = process.env.COLAB_DRIVE_CLIENT_ID ?? '202264815644.apps.googleusercontent.com';
+export const DRIVE_CLIENT_SECRET = process.env.COLAB_DRIVE_CLIENT_SECRET ?? 'X4Z3ca8xfWDb1Voo-F9a7ZxJ';
+export const DRIVE_SCOPES = [
+  'email',
+  'https://www.googleapis.com/auth/drive',
+] as const;
+
 export const CONFIG_DIR = path.join(os.homedir(), '.config', 'colab-cli');
 export const AUTH_FILE = path.join(CONFIG_DIR, 'auth.json');
+export const DRIVE_AUTH_FILE = path.join(CONFIG_DIR, 'drive-auth.json');
 export const SERVERS_FILE = path.join(CONFIG_DIR, 'servers.json');
+export const DRIVE_UPLOADS_DIR = path.join(CONFIG_DIR, 'drive-uploads');

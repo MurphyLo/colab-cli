@@ -10,6 +10,7 @@ This project is a migration of the Colab runtime logic from the `colab-vscode` c
 - Executing Python code on an active runtime via a background daemon
 - Streaming outputs directly to the terminal
 - Uploading and downloading files to/from the runtime filesystem
+- Google Drive file management (upload/download/list/mkdir/delete/move)
 - Querying subscription tier and Colab Compute Unit (CCU) usage
 
 ## Requirements
@@ -186,9 +187,51 @@ Transfer strategy is chosen automatically based on file size:
 |-----------|----------|-------------|
 | ≤ 20 MiB | Direct | Single REST request |
 | 20–500 MiB | Chunked | Split into 20 MiB chunks, transferred concurrently (up to 25 parallel) |
-| > 500 MiB | Drive | Not yet implemented (planned: Google Drive) |
+| > 500 MiB | Drive | Use `colab drive upload` / `colab drive download` (see below) |
 
 For chunked uploads, chunks are uploaded to a temp directory on the runtime, then assembled via kernel execution. For chunked downloads, the file is split into chunks on the kernel, downloaded concurrently, then assembled locally.
+
+## Google Drive
+
+Manage files directly on Google Drive — useful for large files that can be accessed from Colab runtimes via Drive mount.
+
+### Drive Authentication
+
+Drive uses a **separate OAuth flow** from the Colab login. The first time you run any `drive` subcommand, a browser-based authorization prompt will appear. Drive credentials are stored independently at `~/.config/colab-cli/drive-auth.json`.
+
+### Commands
+
+```bash
+colab drive list [folder-id]                  # List files (default: root)
+colab drive upload <local-path> [-p <id>]     # Upload file (resumable for >5 MiB)
+colab drive download <file-id> [-o <path>]    # Download file
+colab drive mkdir <name> [-p <id>]            # Create folder
+colab drive delete <file-id> [--permanent]    # Delete (default: trash)
+colab drive move <file-id> --to <folder-id>   # Move file to folder
+```
+
+All references to Drive items use **folder/file IDs** (not names), because Google Drive allows duplicate names within the same folder. Use `list` to find IDs.
+
+Upload features:
+- **Resumable**: Files >5 MiB use Google's resumable upload protocol (8 MiB chunks). Interrupted uploads can be resumed by re-running the same command.
+- **MD5 dedup**: Skips upload if an identical file (by MD5) already exists in the target folder.
+
+### Custom OAuth Credentials
+
+By default, Drive commands use shared OAuth credentials. If you hit quota limits, create your own GCP OAuth client:
+
+1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the **Google Drive API**
+3. Create an **OAuth 2.0 Client ID** (Desktop app)
+4. Publish the app (OAuth consent screen → Production)
+5. Set environment variables:
+
+```bash
+export COLAB_DRIVE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+export COLAB_DRIVE_CLIENT_SECRET=your-client-secret
+```
+
+After changing credentials, run any `drive` command to re-authorize.
 
 ## Runtime Naming and Shape Semantics
 
@@ -217,8 +260,10 @@ Without `--use-env-proxy`, newer Node versions will detect the proxy environment
 The CLI has built-in OAuth defaults, but you can override them:
 
 ```bash
-export COLAB_CLIENT_ID=...
+export COLAB_CLIENT_ID=...          # Colab OAuth client
 export COLAB_CLIENT_SECRET=...
+export COLAB_DRIVE_CLIENT_ID=...    # Drive OAuth client (see Google Drive section)
+export COLAB_DRIVE_CLIENT_SECRET=...
 ```
 
 ## Command Summary
@@ -236,6 +281,12 @@ colab usage
 colab exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
 colab fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 colab fs download <remote-path> [-o <local-path>] [-e <endpoint>]
+colab drive list [folder-id]
+colab drive upload <local-path> [-p <folder-id>]
+colab drive download <file-id> [-o <path>]
+colab drive mkdir <name> [-p <folder-id>]
+colab drive delete <file-id> [--permanent]
+colab drive move <file-id> --to <folder-id>
 ```
 
 ## Notes

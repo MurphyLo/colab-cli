@@ -64,11 +64,17 @@ colab-cli/
 │   │   ├── upload.ts               # 上传逻辑（直接 / 分块并发 + 内核拼装）
 │   │   └── download.ts             # 下载逻辑（直接 / 分块并发 + 内核切分）
 │   │
+│   ├── drive/                       # Google Drive 管理
+│   │   ├── auth.ts                  # DriveAuthManager：独立 OAuth 流程（rclone 凭据）
+│   │   ├── client.ts                # googleapis Drive v3 封装（list/download/mkdir/delete/move）
+│   │   └── resumable-upload.ts      # 可续传上传（gaxios + 会话持久化）
+│   │
 │   ├── commands/                    # CLI 命令实现
 │   │   ├── auth.ts                  # login / status / logout
 │   │   ├── runtime.ts               # create / list / destroy / restart
 │   │   ├── exec.ts                  # 代码执行（通过守护进程）
-│   │   └── fs.ts                    # 文件系统操作：upload / download
+│   │   ├── fs.ts                    # 文件系统操作：upload / download
+│   │   └── drive.ts                 # Drive 操作：list / upload / download / mkdir / delete / move
 │   │
 │   ├── output/
 │   │   └── terminal-renderer.ts     # 将 Jupyter IOPub 消息渲染到终端
@@ -445,7 +451,84 @@ fs.ts: fsDownloadCommand()
 
 ---
 
-## 5. 与 colab-vscode 的差异
+## 5. Google Drive 管理
+
+### 5.1 认证架构
+
+Drive 使用**独立的 OAuth 流程**，与 Colab 主登录分离。原因：Colab VS Code 扩展的 GCP 项目未注册 Drive API（尝试添加 `drive` scope 会返回 `restricted_client` 错误）。
+
+| 项 | Colab 登录 | Drive 登录 |
+|---|---|---|
+| OAuth Client | Colab 扩展凭据 | rclone 公共凭据（默认），可通过 `COLAB_DRIVE_CLIENT_ID` 覆盖 |
+| Scope | `profile email colaboratory` | `email drive` |
+| 存储文件 | `~/.config/colab-cli/auth.json` | `~/.config/colab-cli/drive-auth.json` |
+| 触发时机 | `colab auth login` | 首次执行任意 `drive` 子命令时自动触发 |
+
+`DriveAuthManager`（`drive/auth.ts`）：
+- 使用与主登录相同的 `runLoopbackFlow()` 执行 OAuth
+- 存储 `{ refreshToken, clientId, email }` 到 `drive-auth.json`
+- 检测 `clientId` 变更 → 自动触发重新授权
+- `getAccessToken()` 在令牌过期前 5 分钟自动刷新
+
+### 5.2 Drive API 封装
+
+`drive/client.ts` 使用 `googleapis` npm 包（Drive v3 API）：
+
+```typescript
+function createDriveClient(accessToken: string): drive_v3.Drive
+// 每次调用创建新的 OAuth2Client，注入 access_token
+```
+
+核心函数：
+
+| 函数 | 用途 |
+|---|---|
+| `listFiles(token, parentId?, pageToken?)` | 列出文件夹内容（100 项/页，按 folder+name 排序） |
+| `getFileMetadata(token, fileId)` | 获取单个文件元数据（含 md5Checksum） |
+| `downloadFile(token, fileId, destPath)` | 流式下载到本地 |
+| `createFolder(token, name, parentId?)` | 创建文件夹 |
+| `trashFile(token, fileId)` | 移至回收站 |
+| `permanentlyDelete(token, fileId)` | 永久删除 |
+| `moveFile(token, fileId, newParentId)` | 移动文件（PATCH addParents/removeParents） |
+| `findFileByName(token, fileName, parentId)` | 按名称查找文件（用于 MD5 去重） |
+
+**所有参数均使用 raw ID**：Google Drive 允许同一文件夹内存在同名文件/文件夹，因此基于名称/路径的解析不稳健。所有命令的文件/文件夹参数统一使用 Drive file ID，用户通过 `list` 获取 ID。未指定父文件夹时默认为 `root`。
+
+### 5.3 可续传上传
+
+`drive/resumable-upload.ts` 使用 `gaxios`（googleapis 的 HTTP 层）手动实现 Google Drive resumable upload protocol，而非 googleapis 的高层 `files.create`。原因：需要持久化 session URI 实现跨进程断点续传。
+
+**上传策略**：
+
+| 文件大小 | 策略 | 说明 |
+|----------|------|------|
+| ≤ 5 MiB | multipart | 单次请求，`uploadType=multipart` |
+| > 5 MiB | resumable | `uploadType=resumable`，8 MiB 分块 |
+
+**Resumable 流程**：
+
+```
+1. POST /upload/drive/v3/files?uploadType=resumable
+   → 返回 Location header = session URI
+2. PUT session URI (Content-Range: bytes 0-8388607/totalBytes)
+   → 308 Resume Incomplete（返回 Range header 确认已收字节）
+   → 200/201 Upload Complete（返回 file metadata）
+3. 每块完成后更新本地 state 文件
+4. 上传完成后删除 state 文件
+```
+
+**断点续传**：
+- Session state 持久化到 `~/.config/colab-cli/drive-uploads/{sha256-hash}.json`
+- 重新执行同一上传命令时，检测 state 文件 → 查询 session 状态 → 从断点继续
+- Session 过期（404）→ 清除 state，重新开始
+
+**MD5 去重**：上传前通过 `findFileByName()` 检查目标文件夹是否已存在同名文件，若存在且 MD5 匹配则跳过上传。
+
+**错误重试**：5xx 服务器错误和网络错误使用指数退避重试（最多 5 次，1s/2s/4s/8s/16s）。
+
+---
+
+## 6. 与 colab-vscode 的差异
 
 | 方面 | colab-vscode | colab-cli |
 |---|---|---|
@@ -468,7 +551,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 
 ---
 
-## 6. 已知限制与待办
+## 7. 已知限制与待办
 
 ### 当前限制
 
@@ -482,7 +565,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 ### 开发路线
 
 - [ ] `fs ls` / `fs rm`：远程文件列表和删除
-- [ ] `fs upload/download` > 500 MiB：Google Drive 传输通道
+- [x] `colab drive`：Google Drive 文件管理（list/upload/download/mkdir/delete/move）
 - [ ] 图片输出：`--output-dir` 参数，自动保存 PNG 到指定目录
 - [ ] stdin 透传：拦截 `input_request` 消息并转发到 `readline`
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
@@ -492,7 +575,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 
 ---
 
-## 7. 调试技巧
+## 8. 调试技巧
 
 ### 启用详细日志
 
@@ -594,7 +677,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ---
 
-## 8. 构建与运行
+## 9. 构建与运行
 
 ```bash
 cd /Users/justin/dev26/colab-runtime-2/colab-cli
@@ -625,6 +708,12 @@ runtime restart [--endpoint <endpoint>]
 exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
 fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 fs download <remote-path> [-o <local-path>] [-e <endpoint>]
+drive list [folder-id]
+drive upload <local-path> [-p <folder-id>]
+drive download <file-id> [-o <path>]
+drive mkdir <name> [-p <folder-id>]
+drive delete <file-id> [--permanent]
+drive move <file-id> --to <folder-id>
 ```
 
 ### ESM 注意事项
@@ -640,7 +729,7 @@ fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 
 ---
 
-## 9. 源码溯源
+## 10. 源码溯源
 
 colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 
@@ -670,4 +759,4 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 
 ---
 
-*最后更新：2026-03-20 同步 Drive 挂载前台授权链路（daemon 转发 `request_auth` 到 CLI）与交互文案格式*
+*最后更新：2026-03-22 新增 Google Drive 管理功能（独立 OAuth、googleapis 封装、可续传上传）*

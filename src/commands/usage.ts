@@ -1,7 +1,7 @@
 import chalk from 'chalk';
-import ora from 'ora';
 import { ColabClient } from '../colab/client.js';
 import { SubscriptionTier } from '../colab/api.js';
+import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
 
 const TIER_LABEL: Record<SubscriptionTier, string> = {
   [SubscriptionTier.NONE]: 'Free',
@@ -10,10 +10,28 @@ const TIER_LABEL: Record<SubscriptionTier, string> = {
 };
 
 export async function usageCommand(colabClient: ColabClient): Promise<void> {
-  const spinner = ora('Fetching usage info...').start();
+  const spinner = createSpinner('Fetching usage info...').start();
   try {
     const info = await colabClient.getConsumptionUserInfo();
     spinner.stop();
+
+    if (isJsonMode()) {
+      const result: Record<string, unknown> = {
+        command: 'usage',
+        subscriptionTier: TIER_LABEL[info.subscriptionTier],
+        consumptionRateHourly: info.consumptionRateHourly,
+      };
+      if (info.subscriptionTier !== SubscriptionTier.NONE) {
+        result.paidComputeUnitsBalance = info.paidComputeUnitsBalance;
+      } else if (info.freeCcuQuotaInfo) {
+        result.freeCcuQuotaInfo = {
+          remainingCcu: info.freeCcuQuotaInfo.remainingTokens / 1000,
+          nextRefillDate: new Date(info.freeCcuQuotaInfo.nextRefillTimestampSec * 1000).toISOString(),
+        };
+      }
+      jsonResult(result);
+      return;
+    }
 
     console.log(chalk.bold('\nColab Usage:'));
     console.log(`  Subscription:      ${chalk.cyan(TIER_LABEL[info.subscriptionTier])}`);

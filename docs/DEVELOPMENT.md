@@ -77,6 +77,7 @@ colab-cli/
 │   │   └── drive.ts                 # Drive 操作：list / upload / download / mkdir / delete / move
 │   │
 │   ├── output/
+│   │   ├── json-output.ts           # --json 模式：全局状态、SilentSpinner、jsonResult()
 │   │   └── terminal-renderer.ts     # 将 Jupyter IOPub 消息渲染到终端
 │   │
 │   ├── utils/
@@ -569,7 +570,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [ ] 图片输出：`--output-dir` 参数，自动保存 PNG 到指定目录
 - [ ] stdin 透传：拦截 `input_request` 消息并转发到 `readline`
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
-- [ ] `--json` 输出模式（结构化输出）
+- [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持
 - [ ] runtime 信息缓存/展示优化
 - [ ] `daemon status` 命令：查看守护进程状态
 
@@ -696,6 +697,8 @@ npm run dev          # watch 模式编译
 
 ### 命令总览
 
+所有命令支持全局 `--json` 标志，输出结构化 JSON 到 stdout（适用于脚本自动化）。
+
 ```text
 auth login
 auth status
@@ -750,6 +753,7 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `runtime/keep-alive.ts` | `colab/keep-alive.ts` | 大：简化为 setInterval |
 | `runtime/connection-refresher.ts` | `colab/connection-refresher.ts` | 大：简化为 setTimeout 链 |
 | `output/terminal-renderer.ts` | 无对应 | **全新**：终端输出渲染 |
+| `output/json-output.ts` | 无对应 | **全新**：`--json` 模式全局状态、SilentSpinner、jsonResult/jsonError |
 | `daemon/*` | 无对应 | **全新**：守护进程架构，IPC 通信 |
 | `jupyter/contents-client.ts` | `jupyter/client/generated/apis/ContentsApi.ts` | **重写**：手写 REST client，修复路径编码 |
 | `transfer/common.ts` | 无对应 | **全新**：传输共享基础设施 |
@@ -759,4 +763,4 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 
 ---
 
-*最后更新：2026-03-22 新增 Google Drive 管理功能（独立 OAuth、googleapis 封装、可续传上传）*
+*最后更新：2026-03-22 新增全局 `--json` 输出模式 + `drive mkdir/upload` 空 parent 校验修复*

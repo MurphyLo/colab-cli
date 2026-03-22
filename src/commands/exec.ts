@@ -1,11 +1,11 @@
 import fs from 'fs';
-import ora from 'ora';
 import { ColabClient } from '../colab/client.js';
 import { handleEphemeralAuth } from '../auth/ephemeral.js';
 import { DaemonClient } from '../daemon/client.js';
 import { renderOutput, renderStream } from '../output/terminal-renderer.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
+import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
 
 export async function execCommand(
   runtimeManager: RuntimeManager,
@@ -35,7 +35,7 @@ export async function execCommand(
     process.exit(1);
   }
 
-  const spinner = ora('Connecting to daemon...').start();
+  const spinner = createSpinner('Connecting to daemon...').start();
   const client = new DaemonClient();
   try {
     await client.connect(server.id);
@@ -51,7 +51,14 @@ export async function execCommand(
         await handleEphemeralAuth(colabClient, server.endpoint, authType, server.label);
       },
     });
-    if (options.batch) {
+    if (isJsonMode()) {
+      // JSON mode: always batch-collect, then emit structured output
+      const collected: KernelOutput[] = [];
+      for await (const output of outputs) {
+        collected.push(output);
+      }
+      jsonResult({ command: 'exec', outputs: collected });
+    } else if (options.batch) {
       const collected: KernelOutput[] = [];
       for await (const output of outputs) {
         collected.push(output);

@@ -1,8 +1,8 @@
 import path from 'path';
 import fs from 'fs';
-import ora from 'ora';
 import chalk from 'chalk';
 import { DriveAuthManager } from '../drive/auth.js';
+import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
 import {
   listFiles,
   getFileMetadata,
@@ -42,13 +42,28 @@ export async function driveListCommand(
   folderId?: string,
 ): Promise<void> {
   const token = await driveAuth.getAccessToken();
-  const spinner = ora('Loading...').start();
+  const spinner = createSpinner('Loading...').start();
 
   try {
     const parentId = folderId || 'root';
     if (folderId) warnIfNotId(folderId, 'folder ID');
     const result = await listFiles(token, parentId);
     spinner.stop();
+
+    if (isJsonMode()) {
+      jsonResult({
+        command: 'drive.list',
+        parentId,
+        files: result.files.map((f) => ({
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType,
+          size: f.size ? parseInt(f.size, 10) : undefined,
+          modifiedTime: f.modifiedTime,
+        })),
+      });
+      return;
+    }
 
     if (result.files.length === 0) {
       console.log('(empty)');
@@ -104,10 +119,17 @@ export async function driveUploadCommand(
     process.exit(1);
   }
 
+  if (options.parent !== undefined && options.parent.trim() === '') {
+    console.error('Error: --parent/-p is empty. Provide a valid folder ID or omit the flag.');
+    process.exit(1);
+  }
+
   const token = await driveAuth.getAccessToken();
   const parentId = options.parent || 'root';
   if (options.parent) warnIfNotId(options.parent, 'parent folder ID');
-  const spinner = ora('Uploading...').start();
+  const spinner = createSpinner('Uploading...').start();
+
+  let skippedResult: { fileName: string; reason: string; fileId: string } | undefined;
 
   const onProgress = (event: DriveUploadProgressEvent): void => {
     switch (event.type) {
@@ -122,7 +144,11 @@ export async function driveUploadCommand(
         break;
       }
       case 'skipped':
-        spinner.info(`Skipped ${event.fileName}: ${event.reason} (ID: ${event.fileId})`);
+        if (isJsonMode()) {
+          skippedResult = { fileName: event.fileName, reason: event.reason, fileId: event.fileId };
+        } else {
+          spinner.info(`Skipped ${event.fileName}: ${event.reason} (ID: ${event.fileId})`);
+        }
         return;
       case 'done':
         break;
@@ -134,6 +160,14 @@ export async function driveUploadCommand(
       parentId,
       onProgress,
     });
+    if (isJsonMode()) {
+      if (skippedResult) {
+        jsonResult({ command: 'drive.upload', skipped: true, ...skippedResult });
+      } else {
+        jsonResult({ command: 'drive.upload', fileId: result.fileId, fileName: result.fileName, totalBytes: result.totalBytes });
+      }
+      return;
+    }
     // skipped case already handled by onProgress
     if (spinner.isSpinning) {
       spinner.succeed(
@@ -155,7 +189,7 @@ export async function driveDownloadCommand(
 ): Promise<void> {
   warnIfNotId(fileId, 'file ID');
   const token = await driveAuth.getAccessToken();
-  const spinner = ora('Fetching file info...').start();
+  const spinner = createSpinner('Fetching file info...').start();
 
   try {
     const meta = await getFileMetadata(token, fileId);
@@ -184,7 +218,11 @@ export async function driveDownloadCommand(
     };
 
     await downloadFile(token, fileId, destPath, onProgress);
-    spinner.succeed(`Downloaded ${meta.name} -> ${destPath} (${formatBytes(totalBytes)})`);
+    if (isJsonMode()) {
+      jsonResult({ command: 'drive.download', name: meta.name, localPath: destPath, totalBytes });
+    } else {
+      spinner.succeed(`Downloaded ${meta.name} -> ${destPath} (${formatBytes(totalBytes)})`);
+    }
   } catch (err) {
     spinner.fail('Download failed');
     throw err;
@@ -198,14 +236,23 @@ export async function driveMkdirCommand(
   name: string,
   parent?: string,
 ): Promise<void> {
+  if (parent !== undefined && parent.trim() === '') {
+    console.error('Error: --parent/-p is empty. Provide a valid folder ID or omit the flag.');
+    process.exit(1);
+  }
+
   const token = await driveAuth.getAccessToken();
   const parentId = parent || 'root';
   if (parent) warnIfNotId(parent, 'parent folder ID');
-  const spinner = ora(`Creating folder "${name}"...`).start();
+  const spinner = createSpinner(`Creating folder "${name}"...`).start();
 
   try {
     const folderId = await createFolder(token, name, parentId);
-    spinner.succeed(`Created folder "${name}" (ID: ${folderId})`);
+    if (isJsonMode()) {
+      jsonResult({ command: 'drive.mkdir', name, folderId, parentId });
+    } else {
+      spinner.succeed(`Created folder "${name}" (ID: ${folderId})`);
+    }
   } catch (err) {
     spinner.fail('Failed to create folder');
     throw err;
@@ -221,15 +268,20 @@ export async function driveDeleteCommand(
 ): Promise<void> {
   warnIfNotId(fileId, 'file ID');
   const token = await driveAuth.getAccessToken();
-  const spinner = ora('Deleting...').start();
+  const spinner = createSpinner('Deleting...').start();
 
   try {
     const meta = await getFileMetadata(token, fileId);
     if (options.permanent) {
       await permanentlyDelete(token, fileId);
-      spinner.succeed(`Permanently deleted "${meta.name}" (${fileId})`);
     } else {
       await trashFile(token, fileId);
+    }
+    if (isJsonMode()) {
+      jsonResult({ command: 'drive.delete', name: meta.name, fileId, permanent: !!options.permanent });
+    } else if (options.permanent) {
+      spinner.succeed(`Permanently deleted "${meta.name}" (${fileId})`);
+    } else {
       spinner.succeed(`Moved "${meta.name}" to trash (${fileId})`);
     }
   } catch (err) {
@@ -248,12 +300,16 @@ export async function driveMoveCommand(
   warnIfNotId(fileId, 'file ID');
   warnIfNotId(toFolder, 'folder ID');
   const token = await driveAuth.getAccessToken();
-  const spinner = ora('Moving...').start();
+  const spinner = createSpinner('Moving...').start();
 
   try {
     const meta = await getFileMetadata(token, fileId);
     await moveFile(token, fileId, toFolder);
-    spinner.succeed(`Moved "${meta.name}" to folder ${toFolder}`);
+    if (isJsonMode()) {
+      jsonResult({ command: 'drive.move', name: meta.name, fileId, toFolder });
+    } else {
+      spinner.succeed(`Moved "${meta.name}" to folder ${toFolder}`);
+    }
   } catch (err) {
     spinner.fail('Move failed');
     throw err;

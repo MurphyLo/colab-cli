@@ -1,4 +1,3 @@
-import ora from 'ora';
 import chalk from 'chalk';
 import {
   Variant,
@@ -11,6 +10,7 @@ import {
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { ColabClient } from '../colab/client.js';
 import { DaemonClient } from '../daemon/client.js';
+import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
 
 export async function createRuntimeCommand(
   runtimeManager: RuntimeManager,
@@ -40,7 +40,7 @@ export async function createRuntimeCommand(
       process.exit(1);
   }
 
-  const spinner = ora(
+  const spinner = createSpinner(
     `Creating ${variantToMachineType(variant)} runtime...`,
   ).start();
   try {
@@ -49,9 +49,13 @@ export async function createRuntimeCommand(
       accelerator: selection.accelerator,
       shape,
     });
-    spinner.succeed(
-      `Runtime created: ${server.label} (endpoint: ${server.endpoint})`,
-    );
+    if (isJsonMode()) {
+      jsonResult({ command: 'runtime.create', label: server.label, endpoint: server.endpoint });
+    } else {
+      spinner.succeed(
+        `Runtime created: ${server.label} (endpoint: ${server.endpoint})`,
+      );
+    }
   } catch (err) {
     spinner.fail('Failed to create runtime');
     throw err;
@@ -99,10 +103,23 @@ function parseAcceleratorSelection(accelerator: string | undefined): {
 export async function listRuntimesCommand(
   runtimeManager: RuntimeManager,
 ): Promise<void> {
-  const spinner = ora('Fetching runtimes...').start();
+  const spinner = createSpinner('Fetching runtimes...').start();
   try {
     const assignments = await runtimeManager.list();
     spinner.stop();
+
+    if (isJsonMode()) {
+      jsonResult({
+        command: 'runtime.list',
+        runtimes: assignments.map((a) => ({
+          type: variantToMachineType(a.variant),
+          accelerator: a.accelerator && a.accelerator !== 'NONE' ? a.accelerator : undefined,
+          shape: shapeToMachineShape(isHighMemOnlyAccelerator(a.accelerator) ? Shape.HIGHMEM : a.machineShape),
+          endpoint: a.endpoint,
+        })),
+      });
+      return;
+    }
 
     if (assignments.length === 0) {
       console.log('No active runtimes.');
@@ -133,7 +150,7 @@ export async function listRuntimesCommand(
 export async function listAvailableRuntimesCommand(
   colabClient: ColabClient,
 ): Promise<void> {
-  const spinner = ora('Fetching available runtime options...').start();
+  const spinner = createSpinner('Fetching available runtime options...').start();
   try {
     const userInfo = await colabClient.getUserInfo();
     spinner.stop();
@@ -148,6 +165,17 @@ export async function listAvailableRuntimesCommand(
           accelerator: model,
         });
       }
+    }
+
+    if (isJsonMode()) {
+      const options = getPreferredAvailableOptions(available).map((option) => ({
+        label: formatAvailableOptionLabel(option.variant, option.accelerator),
+        variant: option.variant,
+        accelerator: option.accelerator,
+        shapes: getDisplayShapes(option.variant, option.accelerator, supportsHighMem).map(shapeToMachineShape),
+      }));
+      jsonResult({ command: 'runtime.available', options });
+      return;
     }
 
     console.log(chalk.bold('\nAvailable Runtime Options:'));
@@ -257,10 +285,14 @@ export async function destroyRuntimeCommand(
     endpoint = server.endpoint;
   }
 
-  const spinner = ora('Destroying runtime...').start();
+  const spinner = createSpinner('Destroying runtime...').start();
   try {
     await runtimeManager.destroy(endpoint);
-    spinner.succeed(`Runtime destroyed: ${endpoint}`);
+    if (isJsonMode()) {
+      jsonResult({ command: 'runtime.destroy', endpoint });
+    } else {
+      spinner.succeed(`Runtime destroyed: ${endpoint}`);
+    }
   } catch (err) {
     spinner.fail('Failed to destroy runtime');
     throw err;
@@ -279,12 +311,16 @@ export async function restartRuntimeCommand(
     process.exit(1);
   }
 
-  const spinner = ora('Restarting kernel...').start();
+  const spinner = createSpinner('Restarting kernel...').start();
   const client = new DaemonClient();
   try {
     await client.connect(server.id);
     await client.restart();
-    spinner.succeed('Kernel restarted');
+    if (isJsonMode()) {
+      jsonResult({ command: 'runtime.restart', endpoint: server.endpoint });
+    } else {
+      spinner.succeed('Kernel restarted');
+    }
   } catch (err) {
     spinner.fail('Failed to restart kernel');
     throw err;

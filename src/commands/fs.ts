@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import ora from 'ora';
 import { DaemonClient } from '../daemon/client.js';
+import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { getStoredServer, type StoredServer } from '../runtime/storage.js';
 import { type ConnectionProvider, chooseStrategy, formatBytes } from '../transfer/common.js';
@@ -78,7 +78,7 @@ export async function fsUploadCommand(
     execOnKernel = async () => '';
   }
 
-  const spinner = ora('Uploading...').start();
+  const spinner = createSpinner('Uploading...').start();
   const onProgress = (event: UploadProgressEvent): void => {
     switch (event.type) {
       case 'start':
@@ -106,7 +106,11 @@ export async function fsUploadCommand(
       localPath: resolvedPath,
       remotePath: options.remotePath,
     }, execOnKernel, onProgress);
-    spinner.succeed(`Uploaded ${path.basename(result.localPath)} -> /${result.remotePath} (${formatBytes(result.sizeBytes)})`);
+    if (isJsonMode()) {
+      jsonResult({ command: 'fs.upload', localPath: result.localPath, remotePath: result.remotePath, sizeBytes: result.sizeBytes });
+    } else {
+      spinner.succeed(`Uploaded ${path.basename(result.localPath)} -> /${result.remotePath} (${formatBytes(result.sizeBytes)})`);
+    }
   } catch (err) {
     spinner.fail('Upload failed');
     throw err;
@@ -144,7 +148,7 @@ export async function fsDownloadCommand(
     return execOnKernelCached(code);
   };
 
-  const spinner = ora('Downloading...').start();
+  const spinner = createSpinner('Downloading...').start();
   const onProgress = (event: DownloadProgressEvent): void => {
     switch (event.type) {
       case 'start':
@@ -172,7 +176,11 @@ export async function fsDownloadCommand(
       remotePath: options.remotePath,
       localPath: options.localPath,
     }, execOnKernel, onProgress);
-    spinner.succeed(`Downloaded /${result.remotePath} -> ${result.localPath} (${formatBytes(result.sizeBytes)})`);
+    if (isJsonMode()) {
+      jsonResult({ command: 'fs.download', remotePath: result.remotePath, localPath: result.localPath, sizeBytes: result.sizeBytes });
+    } else {
+      spinner.succeed(`Downloaded /${result.remotePath} -> ${result.localPath} (${formatBytes(result.sizeBytes)})`);
+    }
   } catch (err) {
     spinner.fail('Download failed');
     throw err;

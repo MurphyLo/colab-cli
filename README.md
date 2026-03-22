@@ -255,6 +255,29 @@ colab runtime available
 
 Without `--use-env-proxy`, newer Node versions will detect the proxy environment variables but will not route traffic through them automatically.
 
+## JSON Output (Scripting)
+
+All commands support a global `--json` flag that writes structured JSON to stdout, making output reliable for shell scripts and automation pipelines.
+
+```bash
+# Interactive (human-readable spinner on stderr)
+colab drive mkdir models -p "$PARENT_ID"
+
+# Scripting (structured JSON on stdout)
+colab drive mkdir models -p "$PARENT_ID" --json
+# => {"command":"drive.mkdir","name":"models","folderId":"1Abc...","parentId":"1Xyz..."}
+```
+
+Example: building a nested Drive folder tree in a script:
+
+```bash
+ROOT=$(colab drive mkdir project -p "$DRIVE_FOLDER" --json | jq -r '.folderId')
+DATA=$(colab drive mkdir data -p "$ROOT" --json | jq -r '.folderId')
+colab drive upload ./dataset.csv -p "$DATA" --json
+```
+
+Every command emits a JSON object with a `command` field identifying the command, plus command-specific data fields. On error, the output is `{"error":"message"}` with a non-zero exit code.
+
 ## Environment Variables
 
 The CLI has built-in OAuth defaults, but you can override them:
@@ -267,6 +290,8 @@ export COLAB_DRIVE_CLIENT_SECRET=...
 ```
 
 ## Command Summary
+
+All commands accept the global `--json` flag for machine-readable output.
 
 ```text
 colab auth login

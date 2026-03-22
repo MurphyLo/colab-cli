@@ -6,6 +6,7 @@ import { AuthManager } from './auth/auth-manager.js';
 import { ColabClient } from './colab/client.js';
 import { RuntimeManager } from './runtime/runtime-manager.js';
 import { log } from './logging/index.js';
+import { setJsonMode, jsonError, isJsonMode } from './output/json-output.js';
 import { loginCommand, statusCommand, logoutCommand } from './commands/auth.js';
 import {
   createRuntimeCommand,
@@ -34,10 +35,14 @@ program
   .description('Interact with Google Colab GPU runtimes from the terminal')
   .version('0.1.0')
   .option('--verbose', 'Enable verbose logging')
+  .option('--json', 'Output results as JSON to stdout (for scripting)')
   .hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
     if (opts.verbose) {
       log.setVerbose(true);
+    }
+    if (opts.json) {
+      setJsonMode(true);
     }
   });
 
@@ -286,9 +291,12 @@ process.on('SIGTERM', () => process.exit(0));
 
 // Run
 program.parseAsync().catch((err) => {
-  if (err instanceof Error) {
-    console.error(`Error: ${err.message}`);
-    log.debug(err.stack);
+  const message = err instanceof Error ? err.message : String(err);
+  if (isJsonMode()) {
+    jsonError(message);
+  } else {
+    console.error(`Error: ${message}`);
   }
+  log.debug(err instanceof Error ? err.stack : undefined);
   process.exit(1);
 });

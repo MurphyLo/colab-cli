@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --use-env-proxy --disable-warning=UNDICI-EHPA
 
 import { Command } from 'commander';
-import { COLAB_API_DOMAIN, COLAB_GAPI_DOMAIN, OAUTH_CLIENT_ID } from './config.js';
+import { COLAB_API_DOMAIN, COLAB_GAPI_DOMAIN, OAUTH_CLIENT_ID, DRIVEFS_CLIENT_ID } from './config.js';
 import { AuthManager } from './auth/auth-manager.js';
 import { ColabClient } from './colab/client.js';
 import { RuntimeManager } from './runtime/runtime-manager.js';
@@ -28,6 +28,12 @@ import {
   driveMoveCommand,
 } from './commands/drive.js';
 import { DriveAuthManager } from './drive/auth.js';
+import { MountAuthManager } from './drive/mount-auth.js';
+import {
+  driveMountLoginCommand,
+  driveMountCommand,
+  driveMountStatusCommand,
+} from './commands/drive-mount.js';
 
 const program = new Command();
 
@@ -285,6 +291,32 @@ drive
     const da = await ensureDriveAuth();
     await driveMoveCommand(da, itemId, opts.to);
   });
+
+// Drive mount commands (requires COLAB_DRIVEFS_CLIENT_ID/SECRET env vars)
+if (DRIVEFS_CLIENT_ID) {
+  const driveMount = program
+    .command('drive-mount')
+    .description('Mount Google Drive on a runtime (auto, no browser)')
+    .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
+    .action(async (opts) => {
+      await ensureLoggedIn();
+      await driveMountCommand(runtimeManager, opts.endpoint);
+    });
+
+  driveMount
+    .command('login')
+    .description('One-time authorization for automatic Drive mounting')
+    .action(async () => {
+      await driveMountLoginCommand();
+    });
+
+  driveMount
+    .command('status')
+    .description('Check Drive mount authorization status')
+    .action(async () => {
+      await driveMountStatusCommand();
+    });
+}
 
 // Graceful shutdown (daemons are independent processes and keep running)
 process.on('SIGINT', () => process.exit(0));

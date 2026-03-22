@@ -1,8 +1,8 @@
 ---
 name: colab-cli
-description: "Use this skill whenever the user wants to operate Google Colab from the terminal: authenticate, inspect available runtimes, create or destroy a runtime, restart a kernel, check CCU usage, execute Python remotely, upload or download files to a Colab runtime, or manage files in Google Drive through `colab drive`. Prefer this skill even if the user does not mention `colab-cli` explicitly but asks to use a Colab GPU or TPU, run code on Colab from a shell, move files to `/content`, move large files through Drive, or troubleshoot Colab auth, Drive auth, quota, proxy, or runtime lifecycle issues."
+description: "Use this skill whenever the user wants to operate Google Colab from the terminal: authenticate, inspect available runtimes, create or destroy a runtime, restart a kernel, check CCU usage, execute Python remotely, upload or download files to a Colab runtime, manage files in Google Drive through `colab drive`, or mount Drive on a runtime via `colab drive-mount`. Prefer this skill even if the user does not mention `colab-cli` explicitly but asks to use a Colab GPU or TPU, run code on Colab from a shell, move files to `/content`, move large files through Drive, mount Drive automatically, or troubleshoot Colab auth, Drive auth, quota, proxy, or runtime lifecycle issues."
 metadata:
-  short-description: Use the `colab` CLI for Colab auth, runtime, exec, fs, usage, and Drive tasks
+  short-description: Use the `colab` CLI for Colab auth, runtime, exec, fs, usage, Drive, and Drive mount tasks
 ---
 
 # Colab CLI
@@ -17,6 +17,7 @@ Treat `colab --help` and `colab <subcommand> --help` as the source of truth for 
 - For `runtime`, `exec`, `fs`, and `usage`, check login state with `colab auth status` before acting.
 - If Colab auth is missing, use `colab auth login` and explain that it opens a browser OAuth flow.
 - `colab drive ...` uses a separate OAuth flow from `colab auth login`. The first Drive command may open a separate browser authorization step.
+- `colab drive-mount` requires `COLAB_DRIVEFS_CLIENT_ID` and `COLAB_DRIVEFS_CLIENT_SECRET` environment variables. Without them the command is hidden and the standard browser-based ephemeral auth flow is used.
 - If the machine is behind a proxy, export the relevant proxy environment variables (e.g., `HTTPS_PROXY`) before calling `colab`.
 - If the command is missing, ensure Node.js is installed, then clone the repository (e.g., `git clone https://github.com/Murphylo/colab-cli.git`), navigate into it, and run `npm install`, `npm run build`, and `npm link`.
 
@@ -106,7 +107,7 @@ colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
 - Use inline code for short snippets.
 - Use `-f` for multi-line scripts or when shell quoting would be fragile.
 - Use `-b` when the user wants final output only rather than streamed logs.
-- If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval.
+- If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
 
 ### Runtime Filesystem Transfer
 
@@ -139,10 +140,25 @@ colab drive delete <file-id> --permanent
 - `drive upload` is resumable for large files and can continue after interruption by re-running the same command.
 - For large assets, durable storage, or workflows that rely on `drive.mount('/content/drive')`, prefer `colab drive` over `colab fs`.
 
+### Automatic Drive Mounting
+
+```bash
+colab drive-mount login                  # One-time: authorize (opens browser)
+colab drive-mount                        # Mount Drive on the latest runtime
+colab drive-mount -e <endpoint>          # Mount on a specific runtime
+colab drive-mount status                 # Check authorization status
+```
+
+- Requires `COLAB_DRIVEFS_CLIENT_ID` and `COLAB_DRIVEFS_CLIENT_SECRET` environment variables.
+- One-time `login` saves a persistent refresh token. After that, `drive-mount` works without browser interaction on any new runtime.
+- Drive is mounted at `/content/drive`. Python code calling `drive.mount('/content/drive')` will detect the existing mount and return immediately.
+- When the env vars are not set, this command group is hidden and the standard browser-based auth flow is used as fallback.
+
 ### Choosing `fs` vs `drive`
 
 - Use `colab fs` when the target is the live runtime filesystem and the file size is within the direct/chunked transfer path.
 - Use `colab drive` when the user explicitly mentions Google Drive, needs persistence outside the runtime, or the file size exceeds the `fs` chunked limit.
+- Use `colab drive-mount` when the user wants to access Drive files from the runtime without browser auth prompts.
 - If the user wants a file visible inside Colab after mounting Drive, upload it with `colab drive` rather than forcing it into `/content`.
 
 ## Troubleshooting

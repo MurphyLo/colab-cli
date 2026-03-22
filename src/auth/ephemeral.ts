@@ -4,6 +4,7 @@ import { AuthType } from '../colab/api.js';
 import { ColabClient } from '../colab/client.js';
 import { log } from '../logging/index.js';
 import { isJsonMode, notifyAuthUrl } from '../output/json-output.js';
+import { MountAuthManager } from '../drive/mount-auth.js';
 
 export class AuthConsentError extends Error {
   constructor(
@@ -21,6 +22,16 @@ export async function handleEphemeralAuth(
   authType: AuthType,
   serverLabel?: string,
 ): Promise<void> {
+  // When local Drive mount credentials are available, DriveFS is already
+  // running with our own metadata server — skip the remote propagation flow.
+  if (authType === AuthType.DFS_EPHEMERAL && MountAuthManager.isConfigured()) {
+    const mountAuth = new MountAuthManager();
+    if (mountAuth.isAuthorized()) {
+      log.trace(`[${authType}] Skipping propagation — local Drive mount credentials available`);
+      return;
+    }
+  }
+
   const dryRunResult = await apiClient.propagateCredentials(endpoint, {
     authType,
     dryRun: true,

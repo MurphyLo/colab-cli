@@ -23,8 +23,19 @@ export const DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive',
 ] as const;
 
+// DriveFS OAuth client — reads from env vars only; feature disabled when unset.
+// These credentials allow direct Drive mounting without the browser-based
+// ephemeral auth flow that Colab normally requires for each new runtime.
+export const DRIVEFS_CLIENT_ID = process.env.COLAB_DRIVEFS_CLIENT_ID;
+export const DRIVEFS_CLIENT_SECRET = process.env.COLAB_DRIVEFS_CLIENT_SECRET;
+export const DRIVEFS_SCOPES = [
+  'email',
+  'https://www.googleapis.com/auth/drive',
+] as const;
+
 export const CONFIG_DIR = path.join(os.homedir(), '.config', 'colab-cli');
 export const AUTH_FILE = path.join(CONFIG_DIR, 'auth.json');
 export const DRIVE_AUTH_FILE = path.join(CONFIG_DIR, 'drive-auth.json');
+export const DRIVE_MOUNT_AUTH_FILE = path.join(CONFIG_DIR, 'drive-mount-auth.json');
 export const SERVERS_FILE = path.join(CONFIG_DIR, 'servers.json');
 export const DRIVE_UPLOADS_DIR = path.join(CONFIG_DIR, 'drive-uploads');

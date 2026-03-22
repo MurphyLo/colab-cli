@@ -11,6 +11,7 @@ This project is a migration of the Colab runtime logic from the `colab-vscode` c
 - Streaming outputs directly to the terminal
 - Uploading and downloading files to/from the runtime filesystem
 - Google Drive file management (upload/download/list/mkdir/delete/move)
+- Automatic Drive mounting on runtimes (no browser required after one-time setup)
 - Querying subscription tier and Colab Compute Unit (CCU) usage
 
 ## Requirements
@@ -163,6 +164,9 @@ If executed code triggers `drive.mount('/content/drive')` or another ephemeral
 Google credential request, the foreground CLI session will prompt for consent,
 open the browser-based OAuth flow, and continue once authorization is complete.
 
+If automatic Drive mounting is configured (see below), `drive.mount()` will
+detect the pre-mounted filesystem and return immediately without any auth prompt.
+
 ## File Transfer
 
 Upload and download files between the local filesystem and the runtime's `/content` directory. Files are transferred via the Jupyter Contents API with automatic chunked transfer for large files.
@@ -233,6 +237,37 @@ export COLAB_DRIVE_CLIENT_SECRET=your-client-secret
 
 After changing credentials, run any `drive` command to re-authorize.
 
+## Automatic Drive Mounting
+
+Mount Google Drive on a runtime without the browser-based consent flow that `drive.mount()` normally requires for each new runtime.
+
+### Setup (one-time)
+
+Authorize once (opens browser):
+
+```bash
+colab drive-mount login
+```
+
+Credentials are stored at `~/.config/colab-cli/drive-mount-auth.json`.
+
+### Usage
+
+After the one-time setup, mount Drive on any runtime — no browser needed:
+
+```bash
+colab drive-mount                        # Mount on the latest runtime
+colab drive-mount -e <endpoint>          # Mount on a specific runtime
+```
+
+Drive is mounted at `/content/drive`. Subsequent calls to `drive.mount('/content/drive')` in Python code will detect the existing mount and return immediately.
+
+Check authorization status:
+
+```bash
+colab drive-mount status
+```
+
 ## Runtime Naming and Shape Semantics
 
 All three runtime subcommands (`available`, `create`, `list`) use consistent Colab UI-oriented shape semantics. High-memory-only accelerators (`H100`, `G4`, `L4`, `v6e-1`, `v5e-1`) are always displayed as `High-RAM`, regardless of the raw backend value.
@@ -294,9 +329,9 @@ Successful commands emit one or more JSON lines. The final success object includ
 The CLI has built-in OAuth defaults, but you can override them:
 
 ```bash
-export COLAB_CLIENT_ID=...          # Colab OAuth client
+export COLAB_CLIENT_ID=...              # Colab OAuth client
 export COLAB_CLIENT_SECRET=...
-export COLAB_DRIVE_CLIENT_ID=...    # Drive OAuth client (see Google Drive section)
+export COLAB_DRIVE_CLIENT_ID=...        # Drive OAuth client (see Google Drive section)
 export COLAB_DRIVE_CLIENT_SECRET=...
 ```
 
@@ -323,6 +358,9 @@ colab drive download <file-id> [-o <path>]
 colab drive mkdir <name> [-p <folder-id>]
 colab drive delete <file-id> [--permanent]
 colab drive move <item-id> --to <folder-id>
+colab drive-mount
+colab drive-mount login
+colab drive-mount status
 ```
 
 ## Notes

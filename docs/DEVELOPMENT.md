@@ -9,7 +9,7 @@
 
 colab-cli 是一个终端工具，无需 VS Code 或 notebook UI，直接通过命令行与 Google Colab GPU runtime 交互。
 
-核心能力：OAuth 登录 → 创建/销毁 runtime → 通过后台守护进程维持 WebSocket 长连接 → 执行 Python 代码并流式输出结果。
+核心能力：OAuth 登录 → 创建/销毁 runtime → 通过后台守护进程维持 WebSocket 长连接 → 执行 Python 代码并流式输出结果 → 文件传输（runtime 文件系统 + Google Drive）→ 自动 Drive 挂载（免浏览器）。
 
 ### 技术栈
 
@@ -67,14 +67,17 @@ colab-cli/
 │   ├── drive/                       # Google Drive 管理
 │   │   ├── auth.ts                  # DriveAuthManager：独立 OAuth 流程（rclone 凭据）
 │   │   ├── client.ts                # googleapis Drive v3 封装（list/download/mkdir/delete/move）
-│   │   └── resumable-upload.ts      # 可续传上传（gaxios + 会话持久化）
+│   │   ├── resumable-upload.ts      # 可续传上传（gaxios + 会话持久化）
+│   │   ├── mount-auth.ts            # MountAuthManager：DriveFS OAuth 凭据管理（环境变量驱动）
+│   │   └── mount.ts                 # Drive 挂载执行逻辑（伪 GCE metadata server + DriveFS 启动）
 │   │
 │   ├── commands/                    # CLI 命令实现
 │   │   ├── auth.ts                  # login / status / logout
 │   │   ├── runtime.ts               # create / list / destroy / restart
 │   │   ├── exec.ts                  # 代码执行（通过守护进程）
 │   │   ├── fs.ts                    # 文件系统操作：upload / download
-│   │   └── drive.ts                 # Drive 操作：list / upload / download / mkdir / delete / move
+│   │   ├── drive.ts                 # Drive 操作：list / upload / download / mkdir / delete / move
+│   │   └── drive-mount.ts           # Drive 挂载操作：login / mount / status
 │   │
 │   ├── output/
 │   │   ├── json-output.ts           # --json 模式：全局状态、SilentSpinner、jsonResult()
@@ -366,6 +369,8 @@ exec.ts: execCommand()
 
 **非交互 JSON 行为**：如果 `--json` 模式下 stdout 被脚本消费且 stdin 不是 TTY，前台 CLI 在需要用户完成浏览器授权时会抛出 `AuthConsentError`；CLI 入口统一转换为 `{"error":"consent_required","authType":"...","url":"..."}`，并以非零状态码退出，避免卡死在不可交互的 `readline` 上。
 
+**本地 Drive 凭据旁路**：当 `MountAuthManager.isConfigured()` 且已授权时（即 DriveFS 环境变量已配置且 `drive-mount login` 已完成），`handleEphemeralAuth()` 对 `DFS_EPHEMERAL` 类型直接 return，跳过整个 `propagateCredentials` 流程。这使得 Python 代码中的 `drive.mount()` 无需浏览器交互——`blocking_request('request_auth')` 成功返回后，`drive.mount()` 检测到已存在的挂载点即刻完成。
+
 ### 4.5 内核重启
 
 ```
@@ -530,6 +535,57 @@ function createDriveClient(accessToken: string): drive_v3.Drive
 
 **错误重试**：5xx 服务器错误和网络错误使用指数退避重试（最多 5 次，1s/2s/4s/8s/16s）。
 
+### 5.4 自动 Drive 挂载
+
+自动挂载功能绕过 Colab 的 `propagateCredentials` 流程，在 runtime 内启动一个伪 GCE metadata server 向 DriveFS 提供令牌，实现零浏览器交互的 Drive 挂载。
+
+**前提条件**：需要设置 `COLAB_DRIVEFS_CLIENT_ID` 和 `COLAB_DRIVEFS_CLIENT_SECRET` 环境变量。未配置时，`drive-mount` 命令组在 CLI 中隐藏，回退到标准的浏览器 ephemeral auth 流程。
+
+**认证架构**：
+
+| 项 | Drive 管理（`colab drive`） | Drive 自动挂载（`colab drive-mount`） |
+|---|---|---|
+| OAuth Client | rclone 公共凭据（默认） | DriveFS 内嵌凭据（环境变量） |
+| Scope | `email drive` | `email drive` |
+| 存储文件 | `~/.config/colab-cli/drive-auth.json` | `~/.config/colab-cli/drive-mount-auth.json` |
+| 触发时机 | 首次 `drive` 子命令 | `colab drive-mount login` |
+
+`MountAuthManager`（`drive/mount-auth.ts`）：
+- 静态方法 `isConfigured()` 检查环境变量是否设置（不实例化即可调用）
+- `ensureAuthorized()` 运行 OAuth 流程（浏览器 loopback），存储 refresh token
+- `getAccessToken()` / `getRefreshToken()` 提供令牌，过期前自动刷新
+
+**挂载流程（`drive/mount.ts`）**：
+
+```
+driveMountCommand()
+  → MountAuthManager.ensureAuthorized()（确保已登录）
+  → 获取目标 runtime（--endpoint 或最新的）
+  → DaemonClient.connect(serverId)
+  → mountDrive(client, mountAuth)
+      1. 获取 access token + refresh token
+      2. 生成 Python 脚本（buildMountScript）
+      3. 通过 daemon exec 执行
+
+Python 脚本内部:
+  1. 启动 HTTP server (0.0.0.0:8009) 模拟 GCE metadata endpoint
+     - /computeMetadata/v1/instance/service-accounts/default/token
+       → 返回 { access_token, expires_in, token_type, scope }
+     - /computeMetadata/v1/instance/service-accounts/default/email → 用户邮箱
+     - /computeMetadata/v1/instance/service-accounts/default/scopes → scope 列表
+     - 其他 GCE 路径 → 空 200 响应
+  2. 令牌自动刷新：后台线程使用 refresh token 在过期前刷新 access token
+  3. 杀死已有 DriveFS 进程
+  4. 设置 TBE_EPHEM_CREDS_ADDR=172.28.0.1:8009
+  5. 启动 /opt/google/drive/drive --metadata_server_auth_uri=...
+  6. 轮询等待 /content/drive/My Drive 出现（最长 90 秒）
+```
+
+**关键细节**：
+- DriveFS 要求 token 响应包含 `scope` 字段，否则报 "Received empty scopes" 并退出
+- metadata server 必须监听 `0.0.0.0:8009`（DriveFS 硬编码通过 `TBE_EPHEM_CREDS_ADDR` 访问 `172.28.0.1:8009`）
+- `drive.mount()` 在 Python 中调用时，先发 `blocking_request('request_auth')`，再检查 `os.path.isdir(mountpoint + '/My Drive')`。pre-mount 后两步均快速通过（auth 被旁路，挂载点已存在）
+
 ---
 
 ## 6. 与 colab-vscode 的差异
@@ -574,6 +630,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [ ] stdin 透传：拦截 `input_request` 消息并转发到 `readline`
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
 - [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr
+- [x] `colab drive-mount`：自动 Drive 挂载（伪 GCE metadata server + DriveFS，一次授权后免浏览器）
 - [ ] runtime 信息缓存/展示优化
 - [ ] `daemon status` 命令：查看守护进程状态
 
@@ -618,8 +675,10 @@ tail -f ~/.config/colab-cli/daemon-*.log
 ### 检查存储文件
 
 ```bash
-cat ~/.config/colab-cli/auth.json    # 认证信息
-cat ~/.config/colab-cli/servers.json  # runtime 列表
+cat ~/.config/colab-cli/auth.json              # Colab 认证信息
+cat ~/.config/colab-cli/servers.json            # runtime 列表
+cat ~/.config/colab-cli/drive-auth.json         # Drive 认证信息
+cat ~/.config/colab-cli/drive-mount-auth.json   # Drive 挂载认证信息（DriveFS）
 ```
 
 ### 检查守护进程状态
@@ -720,6 +779,9 @@ drive download <file-id> [-o <path>]
 drive mkdir <name> [-p <folder-id>]
 drive delete <file-id> [--permanent]
 drive move <item-id> --to <folder-id>
+drive-mount                                          # 需要 COLAB_DRIVEFS 环境变量
+drive-mount login
+drive-mount status
 ```
 
 ### ESM 注意事项
@@ -763,7 +825,10 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `transfer/upload.ts` | `colab-runtime-skill/runtime/src/upload.js` | **移植**：从 JS 移植为 TS，适配 ConnectionProvider |
 | `transfer/download.ts` | `colab-vscode/src/jupyter/contents/file-system.ts` (readFile) | **全新**：参考 readFile 的 base64 GET，新增分块并发下载 |
 | `commands/fs.ts` | 无对应 | **全新**：文件系统子命令 |
+| `commands/drive-mount.ts` | 无对应 | **全新**：Drive 挂载子命令（login/mount/status） |
+| `drive/mount-auth.ts` | 无对应 | **全新**：DriveFS OAuth 凭据管理（环境变量驱动） |
+| `drive/mount.ts` | 无对应 | **全新**：Drive 挂载执行（伪 GCE metadata server + DriveFS 启动脚本） |
 
 ---
 
-*最后更新：2026-03-23 补充 OAuth / ephemeral auth 在 `--json` 模式下的 JSON Lines、stderr prompt、`consent_required` 行为*
+*最后更新：2026-03-23 补充自动 Drive 挂载（`drive-mount`）架构：MountAuthManager、伪 GCE metadata server、DriveFS 启动流程、ephemeral auth 旁路*

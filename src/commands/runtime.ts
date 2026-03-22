@@ -307,7 +307,7 @@ export async function restartRuntimeCommand(
     ? runtimeManager.getServerByEndpoint(endpoint)
     : runtimeManager.getLatestServer();
   if (!server) {
-    console.error('No runtime found. Create one first with `colab-cli runtime create`.');
+    console.error('No runtime found. Create one first with `colab runtime create`.');
     process.exit(1);
   }
 

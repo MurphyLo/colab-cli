@@ -32,7 +32,7 @@ import { DriveAuthManager } from './drive/auth.js';
 const program = new Command();
 
 program
-  .name('colab-cli')
+  .name('colab')
   .description('Interact with Google Colab GPU runtimes from the terminal')
   .version('0.1.0')
   .option('--verbose', 'Enable verbose logging')
@@ -78,7 +78,7 @@ async function ensureInitialized(): Promise<void> {
 async function ensureLoggedIn(): Promise<void> {
   await ensureInitialized();
   if (!authManager.isLoggedIn()) {
-    console.error('Not logged in. Run `colab-cli auth login` first.');
+    console.error('Not logged in. Run `colab auth login` first.');
     process.exit(1);
   }
 }

@@ -69,7 +69,7 @@ export class AuthManager {
 
   async getAccessToken(): Promise<string> {
     if (!this.session) {
-      throw new Error('Not logged in. Run `colab-cli auth login` first.');
+      throw new Error('Not logged in. Run `colab auth login` first.');
     }
     await this.refreshIfNeeded();
     return this.session.accessToken;

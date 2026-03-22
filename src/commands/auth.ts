@@ -35,7 +35,7 @@ export async function statusCommand(authManager: AuthManager): Promise<void> {
     if (isJsonMode()) {
       jsonResult({ command: 'auth.status', loggedIn: false });
     } else {
-      console.log('Not logged in. Run `colab-cli auth login` to sign in.');
+      console.log('Not logged in. Run `colab auth login` to sign in.');
     }
     return;
   }

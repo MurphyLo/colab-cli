@@ -127,7 +127,7 @@ colab drive list <folder-id>
 colab drive upload ./dataset.zip -p <folder-id>
 colab drive download <file-id> -o ./dataset.zip
 colab drive mkdir "checkpoints" -p <folder-id>
-colab drive move <file-id> --to <folder-id>
+colab drive move <item-id> --to <folder-id>
 colab drive delete <file-id>
 colab drive delete <file-id> --permanent
 ```

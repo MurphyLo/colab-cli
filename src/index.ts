@@ -277,12 +277,12 @@ drive
   });
 
 drive
-  .command('move <file-id>')
-  .description('Move a file to another Drive folder')
+  .command('move <item-id>')
+  .description('Move a file or folder to another Drive folder')
   .requiredOption('--to <folder-id>', 'Destination folder ID')
-  .action(async (fileId, opts) => {
+  .action(async (itemId, opts) => {
     const da = await ensureDriveAuth();
-    await driveMoveCommand(da, fileId, opts.to);
+    await driveMoveCommand(da, itemId, opts.to);
   });
 
 // Graceful shutdown (daemons are independent processes and keep running)

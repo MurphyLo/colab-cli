@@ -207,7 +207,7 @@ colab drive upload <local-path> [-p <id>]     # Upload file (resumable for >5 Mi
 colab drive download <file-id> [-o <path>]    # Download file
 colab drive mkdir <name> [-p <id>]            # Create folder
 colab drive delete <file-id> [--permanent]    # Delete (default: trash)
-colab drive move <file-id> --to <folder-id>   # Move file to folder
+colab drive move <item-id> --to <folder-id>   # Move file or folder to folder
 ```
 
 All references to Drive items use **folder/file IDs** (not names), because Google Drive allows duplicate names within the same folder. Use `list` to find IDs.
@@ -311,7 +311,7 @@ colab drive upload <local-path> [-p <folder-id>]
 colab drive download <file-id> [-o <path>]
 colab drive mkdir <name> [-p <folder-id>]
 colab drive delete <file-id> [--permanent]
-colab drive move <file-id> --to <folder-id>
+colab drive move <item-id> --to <folder-id>
 ```
 
 ## Notes

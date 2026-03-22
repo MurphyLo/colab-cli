@@ -490,7 +490,7 @@ function createDriveClient(accessToken: string): drive_v3.Drive
 | `createFolder(token, name, parentId?)` | 创建文件夹 |
 | `trashFile(token, fileId)` | 移至回收站 |
 | `permanentlyDelete(token, fileId)` | 永久删除 |
-| `moveFile(token, fileId, newParentId)` | 移动文件（PATCH addParents/removeParents） |
+| `moveDriveItem(token, itemId, newParentId)` | 移动 Drive 项（文件或文件夹，PATCH addParents/removeParents） |
 | `findFileByName(token, fileName, parentId)` | 按名称查找文件（用于 MD5 去重） |
 
 **所有参数均使用 raw ID**：Google Drive 允许同一文件夹内存在同名文件/文件夹，因此基于名称/路径的解析不稳健。所有命令的文件/文件夹参数统一使用 Drive file ID，用户通过 `list` 获取 ID。未指定父文件夹时默认为 `root`。
@@ -716,7 +716,7 @@ drive upload <local-path> [-p <folder-id>]
 drive download <file-id> [-o <path>]
 drive mkdir <name> [-p <folder-id>]
 drive delete <file-id> [--permanent]
-drive move <file-id> --to <folder-id>
+drive move <item-id> --to <folder-id>
 ```
 
 ### ESM 注意事项

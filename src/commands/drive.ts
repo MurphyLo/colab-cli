@@ -10,7 +10,7 @@ import {
   createFolder,
   trashFile,
   permanentlyDelete,
-  moveFile,
+  moveDriveItem,
   FOLDER_MIME,
 } from '../drive/client.js';
 import { resumableUpload, type DriveUploadProgressEvent } from '../drive/resumable-upload.js';
@@ -294,19 +294,19 @@ export async function driveDeleteCommand(
 
 export async function driveMoveCommand(
   driveAuth: DriveAuthManager,
-  fileId: string,
+  itemId: string,
   toFolder: string,
 ): Promise<void> {
-  warnIfNotId(fileId, 'file ID');
+  warnIfNotId(itemId, 'item ID');
   warnIfNotId(toFolder, 'folder ID');
   const token = await driveAuth.getAccessToken();
   const spinner = createSpinner('Moving...').start();
 
   try {
-    const meta = await getFileMetadata(token, fileId);
-    await moveFile(token, fileId, toFolder);
+    const meta = await getFileMetadata(token, itemId);
+    await moveDriveItem(token, itemId, toFolder);
     if (isJsonMode()) {
-      jsonResult({ command: 'drive.move', name: meta.name, fileId, toFolder });
+      jsonResult({ command: 'drive.move', name: meta.name, itemId, toFolder });
     } else {
       spinner.succeed(`Moved "${meta.name}" to folder ${toFolder}`);
     }

@@ -138,18 +138,18 @@ export async function permanentlyDelete(token: string, fileId: string): Promise<
   await drive.files.delete({ fileId });
 }
 
-export async function moveFile(
+export async function moveDriveItem(
   token: string,
-  fileId: string,
+  itemId: string,
   newParentId: string,
 ): Promise<void> {
   const drive = createDriveClient(token);
-  // Get current parents
-  const meta = await getFileMetadata(token, fileId);
+  // Drive folders and regular files are both items whose parents can be updated.
+  const meta = await getFileMetadata(token, itemId);
   const previousParents = (meta.parents || []).join(',');
 
   await drive.files.update({
-    fileId,
+    fileId: itemId,
     addParents: newParentId,
     removeParents: previousParents,
     fields: 'id, parents',

@@ -10,6 +10,7 @@ import {
 } from '../config.js';
 import { runLoopbackFlow } from '../auth/loopback-flow.js';
 import { log } from '../logging/index.js';
+import { notifyAuthUrl } from '../output/json-output.js';
 
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
@@ -56,15 +57,14 @@ export class DriveAuthManager {
     }
 
     // No stored credentials or refresh failed — run OAuth flow
-    console.log('Google Drive authorization required.');
-    console.log('This uses a separate login from your Colab account.\n');
+    console.error('Google Drive authorization required.');
+    console.error('This uses a separate login from your Colab account.\n');
 
     await runLoopbackFlow(
       this.oAuth2Client,
       [...DRIVE_SCOPES],
       (url) => {
-        console.log('Opening browser for Drive authorization...');
-        console.log(`If the browser did not open, visit: ${url}\n`);
+        notifyAuthUrl('Drive authorization', url);
       },
     );
 

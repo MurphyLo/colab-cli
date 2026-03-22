@@ -6,7 +6,8 @@ import { AuthManager } from './auth/auth-manager.js';
 import { ColabClient } from './colab/client.js';
 import { RuntimeManager } from './runtime/runtime-manager.js';
 import { log } from './logging/index.js';
-import { setJsonMode, jsonError, isJsonMode } from './output/json-output.js';
+import { setJsonMode, jsonError, jsonResult, isJsonMode } from './output/json-output.js';
+import { AuthConsentError } from './auth/ephemeral.js';
 import { loginCommand, statusCommand, logoutCommand } from './commands/auth.js';
 import {
   createRuntimeCommand,
@@ -291,11 +292,12 @@ process.on('SIGTERM', () => process.exit(0));
 
 // Run
 program.parseAsync().catch((err) => {
-  const message = err instanceof Error ? err.message : String(err);
-  if (isJsonMode()) {
-    jsonError(message);
+  if (isJsonMode() && err instanceof AuthConsentError) {
+    jsonResult({ error: 'consent_required', authType: err.authType, url: err.url });
+  } else if (isJsonMode()) {
+    jsonError(err instanceof Error ? err.message : String(err));
   } else {
-    console.error(`Error: ${message}`);
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
   }
   log.debug(err instanceof Error ? err.stack : undefined);
   process.exit(1);

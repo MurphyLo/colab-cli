@@ -355,6 +355,7 @@ exec.ts: execCommand()
    4.1 `propagateCredentials(endpoint, { authType, dryRun: true })`
    4.2 如果已授权 → 直接 `propagateCredentials(..., dryRun: false)`
    4.3 如果未授权 → 在终端提示用户，并以与 `auth login` 一致的格式打印 URL / 打开浏览器
+       `--json` 模式下，说明文字和 readline prompt 走 stderr，stdout 额外发出 `{"event":"auth_required", ...}` 事件
    4.4 用户在浏览器完成 OAuth 后，前台 CLI 执行 `propagateCredentials(..., dryRun: false)`
 5. 前台 CLI 通过 Unix Socket 回送 `auth_response { requestId, error? }`
 6. 守护进程收到 `auth_response` 后，向 kernel 发送 `input_reply`
@@ -362,6 +363,8 @@ exec.ts: execCommand()
 ```
 
 **设计原因**：守护进程是 `detached` 后台进程，不能可靠地直接占用当前终端做交互，也不能在沙箱环境里稳定拉起本机 GUI 浏览器。因此 `drive.mount()` 的授权提示必须由前台 CLI 进程承接，守护进程只负责检测 kernel 的 `request_auth` 并转发。
+
+**非交互 JSON 行为**：如果 `--json` 模式下 stdout 被脚本消费且 stdin 不是 TTY，前台 CLI 在需要用户完成浏览器授权时会抛出 `AuthConsentError`；CLI 入口统一转换为 `{"error":"consent_required","authType":"...","url":"..."}`，并以非零状态码退出，避免卡死在不可交互的 `readline` 上。
 
 ### 4.5 内核重启
 
@@ -570,7 +573,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [ ] 图片输出：`--output-dir` 参数，自动保存 PNG 到指定目录
 - [ ] stdin 透传：拦截 `input_request` 消息并转发到 `readline`
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
-- [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持
+- [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr
 - [ ] runtime 信息缓存/展示优化
 - [ ] `daemon status` 命令：查看守护进程状态
 
@@ -697,7 +700,7 @@ npm run dev          # watch 模式编译
 
 ### 命令总览
 
-所有命令支持全局 `--json` 标志，输出结构化 JSON 到 stdout（适用于脚本自动化）。
+所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象；若流程中需要浏览器 OAuth，则可能先输出一行 `{"event":"auth_required", ...}`。
 
 ```text
 auth login
@@ -745,7 +748,7 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `auth/loopback-server.ts` | `common/loopback-server.ts` | 微小：去掉 vscode.Disposable |
 | `auth/loopback-flow.ts` | `auth/flows/loopback.ts` | 大：重写，合并 CodeManager + flow 逻辑 |
 | `auth/auth-manager.ts` | `auth/auth-provider.ts` | 大：重写，去掉 vscode.authentication API |
-| `auth/ephemeral.ts` | `auth/ephemeral.ts` | 中等：前台 CLI 交互 + readline，输出格式与 `auth login` 对齐 |
+| `auth/ephemeral.ts` | `auth/ephemeral.ts` | 中等：前台 CLI 交互 + readline，`--json` 模式下将 prompt 路由到 stderr，并在非 TTY 时返回 `consent_required` |
 | `jupyter/client/index.ts` | `jupyter/client/index.ts` | 中等：去掉 vscode.Uri/Event，简化为 kernels+sessions |
 | `jupyter/client/generated/` | `jupyter/client/generated/` | 无改动（只加 .js 后缀） |
 | `jupyter/kernel-connection.ts` | 无对应 | **全新**：核心组件，实现 Jupyter 线协议 |
@@ -753,7 +756,7 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `runtime/keep-alive.ts` | `colab/keep-alive.ts` | 大：简化为 setInterval |
 | `runtime/connection-refresher.ts` | `colab/connection-refresher.ts` | 大：简化为 setTimeout 链 |
 | `output/terminal-renderer.ts` | 无对应 | **全新**：终端输出渲染 |
-| `output/json-output.ts` | 无对应 | **全新**：`--json` 模式全局状态、SilentSpinner、jsonResult/jsonError |
+| `output/json-output.ts` | 无对应 | **全新**：`--json` 模式全局状态、SilentSpinner、jsonResult/jsonError、`notifyAuthUrl()` |
 | `daemon/*` | 无对应 | **全新**：守护进程架构，IPC 通信 |
 | `jupyter/contents-client.ts` | `jupyter/client/generated/apis/ContentsApi.ts` | **重写**：手写 REST client，修复路径编码 |
 | `transfer/common.ts` | 无对应 | **全新**：传输共享基础设施 |
@@ -763,4 +766,4 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 
 ---
 
-*最后更新：2026-03-22 新增全局 `--json` 输出模式 + `drive mkdir/upload` 空 parent 校验修复*
+*最后更新：2026-03-23 补充 OAuth / ephemeral auth 在 `--json` 模式下的 JSON Lines、stderr prompt、`consent_required` 行为*

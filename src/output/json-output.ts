@@ -78,6 +78,19 @@ class SilentSpinner implements SpinnerLike {
 }
 
 // ---------------------------------------------------------------------------
+// notifyAuthUrl — display OAuth URL on stderr (safe for JSON mode)
+// ---------------------------------------------------------------------------
+
+export function notifyAuthUrl(context: string, url: string): void {
+  if (jsonMode) {
+    jsonResult({ event: 'auth_required', context, url });
+  } else {
+    console.error(`Opening browser for ${context}...`);
+    console.error(`\nIf the browser did not open, visit this URL to continue:\n${url}\n`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // createSpinner — returns real ora or silent no-op based on JSON mode
 // ---------------------------------------------------------------------------
 

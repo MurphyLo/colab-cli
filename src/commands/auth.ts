@@ -1,5 +1,5 @@
 import { AuthManager } from '../auth/auth-manager.js';
-import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
+import { createSpinner, isJsonMode, jsonResult, notifyAuthUrl } from '../output/json-output.js';
 
 export async function loginCommand(authManager: AuthManager): Promise<void> {
   if (authManager.isLoggedIn()) {
@@ -16,9 +16,7 @@ export async function loginCommand(authManager: AuthManager): Promise<void> {
   try {
     const user = await authManager.login((url) => {
       spinner.stop();
-      // Browser URL always goes to stderr so scripts can still capture JSON on stdout
-      console.error('Opening browser for Google sign-in...');
-      console.error(`\nIf the browser did not open, visit this URL to sign in:\n${url}\n`);
+      notifyAuthUrl('Google sign-in', url);
       spinner.start('Waiting for authentication...');
     });
     if (isJsonMode()) {

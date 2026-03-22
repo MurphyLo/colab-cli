@@ -257,7 +257,9 @@ Without `--use-env-proxy`, newer Node versions will detect the proxy environment
 
 ## JSON Output (Scripting)
 
-All commands support a global `--json` flag that writes structured JSON to stdout, making output reliable for shell scripts and automation pipelines.
+All commands support a global `--json` flag that keeps stdout machine-readable for shell scripts and automation pipelines.
+
+Human-facing progress and consent prompts are routed to stderr. Commands that need a browser-based OAuth step may emit an `auth_required` JSON event before the final command result:
 
 ```bash
 # Interactive (human-readable spinner on stderr)
@@ -266,6 +268,11 @@ colab drive mkdir models -p "$PARENT_ID"
 # Scripting (structured JSON on stdout)
 colab drive mkdir models -p "$PARENT_ID" --json
 # => {"command":"drive.mkdir","name":"models","folderId":"1Abc...","parentId":"1Xyz..."}
+
+# OAuth-driven flow in JSON mode
+colab auth login --json
+# => {"event":"auth_required","context":"Google sign-in","url":"https://accounts.google.com/..."}
+# => {"command":"auth.login","name":"Jane Doe","email":"jane@example.com"}
 ```
 
 Example: building a nested Drive folder tree in a script:
@@ -276,7 +283,11 @@ DATA=$(colab drive mkdir data -p "$ROOT" --json | jq -r '.folderId')
 colab drive upload ./dataset.csv -p "$DATA" --json
 ```
 
-Every command emits a JSON object with a `command` field identifying the command, plus command-specific data fields. On error, the output is `{"error":"message"}` with a non-zero exit code.
+Successful commands emit one or more JSON lines. The final success object includes a `command` field plus command-specific data fields. On error, the command exits non-zero and emits a JSON error object. If interactive consent is required but stdin is non-interactive, the error is:
+
+```json
+{"error":"consent_required","authType":"dfs_ephemeral","url":"https://accounts.google.com/..."}
+```
 
 ## Environment Variables
 

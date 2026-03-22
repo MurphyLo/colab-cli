@@ -3,6 +3,17 @@ import open from 'open';
 import { AuthType } from '../colab/api.js';
 import { ColabClient } from '../colab/client.js';
 import { log } from '../logging/index.js';
+import { isJsonMode, notifyAuthUrl } from '../output/json-output.js';
+
+export class AuthConsentError extends Error {
+  constructor(
+    public readonly authType: AuthType,
+    public readonly url: string,
+  ) {
+    super(`Interactive consent required for ${authType}`);
+    this.name = 'AuthConsentError';
+  }
+}
 
 export async function handleEphemeralAuth(
   apiClient: ColabClient,
@@ -58,24 +69,25 @@ async function promptUserConsent(
       throw new Error(`Unsupported auth type: ${String(authType)}`);
   }
 
-  console.log(`\n${message}`);
-  console.log(detail);
-  const answer = await askQuestion('Allow? (y/n): ');
-  if (answer.toLowerCase() !== 'y') {
-    return false;
+  console.error(`\n${message}`);
+  console.error(detail);
+
+  if (!isJsonMode()) {
+    const answer = await askQuestion('Allow? (y/n): ');
+    if (answer.toLowerCase() !== 'y') {
+      return false;
+    }
   }
 
+  notifyAuthUrl(`${authType} authorization for ${label}`, unauthorizedRedirectUri);
   try {
-    console.log('Opening browser for Google authorization...');
-    console.log(
-      `\nIf the browser did not open, visit this URL to continue:\n${unauthorizedRedirectUri}\n`,
-    );
     await open(unauthorizedRedirectUri);
   } catch (err) {
     log.warn('Failed to open browser automatically:', err);
-    console.log(
-      `\nIf the browser did not open, visit this URL to continue:\n${unauthorizedRedirectUri}\n`,
-    );
+  }
+
+  if (isJsonMode() && !process.stdin.isTTY) {
+    throw new AuthConsentError(authType, unauthorizedRedirectUri);
   }
 
   await askQuestion('Press Enter after authorization is complete...');
@@ -98,7 +110,10 @@ async function propagateCredentials(
 }
 
 function askQuestion(prompt: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: isJsonMode() ? process.stderr : process.stdout,
+  });
   return new Promise((resolve) => {
     rl.question(prompt, (answer) => {
       rl.close();

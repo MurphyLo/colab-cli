@@ -2,12 +2,12 @@
 name: colab-cli
 description: "Use this skill whenever the user wants to operate Google Colab from the terminal: authenticate, inspect available runtimes, create or destroy a runtime, restart a kernel, check CCU usage, execute Python remotely, upload or download files to a Colab runtime, or manage files in Google Drive through `colab drive`. Prefer this skill even if the user does not mention `colab-cli` explicitly but asks to use a Colab GPU or TPU, run code on Colab from a shell, move files to `/content`, move large files through Drive, or troubleshoot Colab auth, Drive auth, quota, proxy, or runtime lifecycle issues."
 metadata:
-  short-description: Use the global `colab` CLI for Colab auth, runtime, exec, fs, usage, and Drive tasks
+  short-description: Use the `colab` CLI for Colab auth, runtime, exec, fs, usage, and Drive tasks
 ---
 
 # Colab CLI
 
-Use the globally installed `colab` command. Do not depend on this repository, its source tree, or its `README.md` at runtime.
+Use the `colab` command.
 
 Treat `colab --help` and `colab <subcommand> --help` as the source of truth for exact flags. Use the guidance below to choose the right workflow quickly and consistently.
 
@@ -17,8 +17,8 @@ Treat `colab --help` and `colab <subcommand> --help` as the source of truth for 
 - For `runtime`, `exec`, `fs`, and `usage`, check login state with `colab auth status` before acting.
 - If Colab auth is missing, use `colab auth login` and explain that it opens a browser OAuth flow.
 - `colab drive ...` uses a separate OAuth flow from `colab auth login`. The first Drive command may open a separate browser authorization step.
-- If the machine is behind a proxy, export `NODE_OPTIONS=--use-env-proxy` and the relevant proxy environment variables before calling `colab`.
-- If the command is missing, the usual installation path is `npm install -g colab-cli`.
+- If the machine is behind a proxy, export the relevant proxy environment variables (e.g., `HTTPS_PROXY`) before calling `colab`.
+- If the command is missing, ensure Node.js is installed, then clone the repository (e.g., `git clone https://github.com/Murphylo/colab-cli.git`), navigate into it, and run `npm install`, `npm run build`, and `npm link`.
 
 ## Default Workflow
 
@@ -29,8 +29,8 @@ Treat `colab --help` and `colab <subcommand> --help` as the source of truth for 
    - `colab auth status` for runtime-side operations.
    - Expect an independent OAuth prompt on first `colab drive ...` use.
 3. Inspect context with `colab runtime available`, `colab runtime list`, or `colab usage` when the task depends on capacity, endpoint choice, or quota state.
-4. Execute the requested operation.
-5. Restart or destroy a runtime only when the user asks for it.
+4. Execute the requested operation. Note that restarting a runtime may be necessary during execution (e.g., after updating dependencies, when a command hangs, or to clear variables).
+5. Destroy a runtime only when the user asks for it.
 
 When a command could act on multiple runtimes, prefer identifying the target explicitly with `colab runtime list` before using `--endpoint`.
 
@@ -38,9 +38,6 @@ When a command could act on multiple runtimes, prefer identifying the target exp
 
 - Runtime accelerators use Colab UI names such as `CPU`, `T4`, `A100`, `L4`, `G4`, `H100`, `v6e-1`, and `v5e-1`.
 - Shapes use `standard` or `high-ram`.
-- High-memory-only accelerators such as `H100`, `G4`, `L4`, `v6e-1`, and `v5e-1` should use `--shape high-ram` or omit `--shape`. Avoid `--shape standard` for them.
-- `colab exec` defaults to the most recently created runtime if `--endpoint` is omitted.
-- Destructive actions such as `colab runtime destroy` should target a specific endpoint whenever more than one runtime exists.
 
 ## JSON Output (`--json`)
 
@@ -95,7 +92,12 @@ Use this when the user asks about subscription tier, remaining CCU balance, refi
 ### Remote Code Execution
 
 ```bash
-colab exec "print('hello from colab')"
+colab exec "
+x = 6 * 7
+print('value:', x)
+for i in range(3):
+    print('row', i)
+"
 colab exec -f script.py
 colab exec -b "print('batch mode')"
 colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
@@ -150,7 +152,6 @@ colab drive delete <file-id> --permanent
 - Runtime state is stored at `~/.config/colab-cli/servers.json`.
 - Drive auth state is stored at `~/.config/colab-cli/drive-auth.json`.
 - Resumable Drive upload state is stored under `~/.config/colab-cli/drive-uploads/`.
-- If proxy variables are set but requests still ignore them, `NODE_OPTIONS=--use-env-proxy` is usually missing.
 - If a Drive command fails because the input looks like a filename instead of an ID, run `colab drive list` first and use the actual file or folder ID.
 - If a script needs to capture command output (IDs, endpoints, paths), always use `--json`. Without it, all human-readable output goes to stderr via the spinner and `$(...)` will capture nothing.
 - Drive quota or OAuth client issues can be addressed by setting `COLAB_DRIVE_CLIENT_ID` and `COLAB_DRIVE_CLIENT_SECRET`, then re-running a Drive command to re-authorize.
@@ -162,4 +163,4 @@ colab drive delete <file-id> --permanent
 - State clearly whether you are operating on the runtime filesystem or Google Drive.
 - Quote code snippets and file paths conservatively to avoid shell parsing mistakes.
 - Summarize outcomes in terms the user cares about: auth status, selected accelerator, endpoint, execution result, uploaded file, downloaded path, Drive file ID, Drive folder ID, or quota state.
-- Keep the workflow terminal-first. Do not tell the model to inspect this repository unless the user is explicitly modifying `colab-cli` itself.
+- Keep the workflow terminal-first.

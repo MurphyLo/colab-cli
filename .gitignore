@@ -12,3 +12,6 @@ dist/
 
 .vscode/
 .idea/
+
+docs/error-records/*
+!docs/error-records/.gitkeep

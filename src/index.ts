@@ -43,6 +43,14 @@ program
   .version('0.1.0')
   .option('--verbose', 'Enable verbose logging')
   .option('--json', 'Output results as JSON to stdout (for scripting)')
+  .configureHelp({
+    subcommandTerm: (cmd) => {
+      const args = (cmd as any).registeredArguments
+        .map((arg: any) => arg.required ? `<${arg._name}>` : `[${arg._name}]`)
+        .join(' ');
+      return cmd.name() + (args ? ' ' + args : '');
+    },
+  })
   .hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
     if (opts.verbose) {
@@ -90,7 +98,7 @@ async function ensureLoggedIn(): Promise<void> {
 }
 
 // Auth commands
-const auth = program.command('auth').description('Authentication management');
+const auth = program.command('auth').description('Manage authentication');
 
 auth
   .command('login')
@@ -102,7 +110,7 @@ auth
 
 auth
   .command('status')
-  .description('Show current authentication status')
+  .description('Show authentication status')
   .action(async () => {
     await ensureInitialized();
     await statusCommand(authManager);
@@ -117,11 +125,11 @@ auth
   });
 
 // Runtime commands
-const runtime = program.command('runtime').description('Runtime management');
+const runtime = program.command('runtime').description('Manage runtimes');
 
 runtime
   .command('create')
-  .description('Create a new Colab runtime')
+  .description('Create a new runtime')
   .requiredOption(
     '-a, --accelerator <accelerator>',
     'Accelerator in Colab UI semantics: CPU, H100, G4, A100, L4, T4, v6e-1, or v5e-1',
@@ -137,7 +145,7 @@ runtime
 
 runtime
   .command('available')
-  .description('List available runtime variants and accelerator models')
+  .description('List available accelerators and machine shapes')
   .action(async () => {
     await ensureLoggedIn();
     await listAvailableRuntimesCommand(colabClient);
@@ -154,7 +162,7 @@ runtime
 runtime
   .command('destroy')
   .description('Destroy a runtime')
-  .option('-e, --endpoint <endpoint>', 'Runtime endpoint to destroy')
+  .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
   .action(async (opts) => {
     await ensureLoggedIn();
     await destroyRuntimeCommand(runtimeManager, opts.endpoint);
@@ -162,7 +170,7 @@ runtime
 
 runtime
   .command('restart')
-  .description('Restart the kernel (Python process, keeps VM alive)')
+  .description('Restart the kernel without destroying the VM')
   .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
   .action(async (opts) => {
     await ensureLoggedIn();
@@ -172,7 +180,7 @@ runtime
 // Usage command
 program
   .command('usage')
-  .description('Show Colab subscription tier and compute unit usage')
+  .description('Show subscription tier and compute-unit usage')
   .action(async () => {
     await ensureLoggedIn();
     await usageCommand(colabClient);
@@ -181,7 +189,7 @@ program
 // Exec command
 program
   .command('exec [code]')
-  .description('Execute code on the runtime and stream output')
+  .description('Execute code on a runtime')
   .option('-f, --file <path>', 'Execute code from a file')
   .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
   .option('-b, --batch', 'Collect all output and print at once instead of streaming')
@@ -196,7 +204,7 @@ program
   });
 
 // File system commands
-const fsCmd = program.command('fs').description('Remote filesystem operations');
+const fsCmd = program.command('fs').description('Transfer files to and from a runtime');
 
 fsCmd
   .command('upload <local-path>')
@@ -237,11 +245,11 @@ async function ensureDriveAuth(): Promise<DriveAuthManager> {
   return driveAuth;
 }
 
-const drive = program.command('drive').description('Google Drive operations');
+const drive = program.command('drive').description('Manage files on Google Drive');
 
 drive
   .command('list [folder-id]')
-  .description('List files in a Drive folder (default: root)')
+  .description('List files in a Google Drive folder')
   .action(async (folderId) => {
     const da = await ensureDriveAuth();
     await driveListCommand(da, folderId);
@@ -249,7 +257,7 @@ drive
 
 drive
   .command('upload <local-path>')
-  .description('Upload a file to Google Drive (resumable for large files)')
+  .description('Upload a file to Google Drive (best for large files)')
   .option('-p, --parent <folder-id>', 'Parent folder ID (default: root)')
   .action(async (localPath, opts) => {
     const da = await ensureDriveAuth();
@@ -267,7 +275,7 @@ drive
 
 drive
   .command('mkdir <name>')
-  .description('Create a folder in Drive')
+  .description('Create a folder on Google Drive')
   .option('-p, --parent <folder-id>', 'Parent folder ID (default: root)')
   .action(async (name, opts) => {
     const da = await ensureDriveAuth();
@@ -276,7 +284,7 @@ drive
 
 drive
   .command('delete <file-id>')
-  .description('Delete a file or folder from Drive')
+  .description('Delete a file or folder on Google Drive')
   .option('--permanent', 'Permanently delete instead of moving to trash')
   .action(async (fileId, opts) => {
     const da = await ensureDriveAuth();
@@ -285,7 +293,7 @@ drive
 
 drive
   .command('move <item-id>')
-  .description('Move a file or folder to another Drive folder')
+  .description('Move a file or folder on Google Drive')
   .requiredOption('--to <folder-id>', 'Destination folder ID')
   .action(async (itemId, opts) => {
     const da = await ensureDriveAuth();
@@ -296,7 +304,7 @@ drive
 if (DRIVEFS_CLIENT_ID) {
   const driveMount = program
     .command('drive-mount')
-    .description('Mount Google Drive on a runtime (auto, no browser)')
+    .description('Mount Google Drive on a runtime without browser auth')
     .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
     .action(async (opts) => {
       await ensureLoggedIn();
@@ -305,14 +313,14 @@ if (DRIVEFS_CLIENT_ID) {
 
   driveMount
     .command('login')
-    .description('One-time authorization for automatic Drive mounting')
+    .description('Authorize for automatic Google Drive mounting')
     .action(async () => {
       await driveMountLoginCommand();
     });
 
   driveMount
     .command('status')
-    .description('Check Drive mount authorization status')
+    .description('Show Google Drive mount authorization status')
     .action(async () => {
       await driveMountStatusCommand();
     });

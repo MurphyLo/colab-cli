@@ -72,15 +72,17 @@ Use `login` for first-time setup or expired Colab credentials. Use `status` as t
 
 ```bash
 colab runtime available
+colab runtime versions
 colab runtime create --accelerator CPU
 colab runtime create --accelerator T4 --shape standard
+colab runtime create --accelerator T4 -v 2025.10
 colab runtime create --accelerator L4 --shape high-ram
 colab runtime list
 colab runtime restart --endpoint <endpoint>
 colab runtime destroy --endpoint <endpoint>
 ```
 
-Use `available` before creation when the user wants to know what their account can launch. Use `list` whenever endpoint selection matters.
+Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--version` with `create` to pin a specific version. Use `list` whenever endpoint selection matters.
 
 ### Usage
 

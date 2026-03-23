@@ -13,6 +13,7 @@ import {
   createRuntimeCommand,
   listAvailableRuntimesCommand,
   listRuntimesCommand,
+  listRuntimeVersionsCommand,
   destroyRuntimeCommand,
   restartRuntimeCommand,
 } from './commands/runtime.js';
@@ -138,6 +139,10 @@ runtime
     '-s, --shape <shape>',
     'Machine shape: standard or high-ram',
   )
+  .option(
+    '-v, --runtime-version <version>',
+    'Runtime version label (e.g. 2026.01). See `colab runtime versions`.',
+  )
   .action(async (opts) => {
     await ensureLoggedIn();
     await createRuntimeCommand(runtimeManager, opts);
@@ -149,6 +154,14 @@ runtime
   .action(async () => {
     await ensureLoggedIn();
     await listAvailableRuntimesCommand(colabClient);
+  });
+
+runtime
+  .command('versions')
+  .description('List available runtime versions and their environment details')
+  .action(async () => {
+    await ensureLoggedIn();
+    await listRuntimeVersionsCommand(colabClient);
   });
 
 runtime

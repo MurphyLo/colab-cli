@@ -198,6 +198,26 @@ export class ColabClient {
     );
   }
 
+  async getRuntimeVersions(signal?: AbortSignal): Promise<string[]> {
+    const url = new URL('vscode/experiment-state', this.colabDomain);
+    const ExperimentStateSchema = z.object({
+      experiments: z
+        .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.union([z.string(), z.number(), z.boolean()]))]).optional())
+        .optional(),
+    });
+    const result = await this.issueRequest(
+      url,
+      { method: 'GET', signal },
+      ExperimentStateSchema,
+      { requireAccessToken: false },
+    );
+    const versions = result.experiments?.['runtime_version_names'];
+    if (Array.isArray(versions) && versions.every((v) => typeof v === 'string')) {
+      return versions as string[];
+    }
+    return [];
+  }
+
   async sendKeepAlive(endpoint: string, signal?: AbortSignal): Promise<void> {
     await this.issueRequest(
       new URL(`${TUN_ENDPOINT}/${endpoint}/keep-alive/`, this.colabDomain),

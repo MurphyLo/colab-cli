@@ -11,12 +11,14 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { ColabClient } from '../colab/client.js';
 import { DaemonClient } from '../daemon/client.js';
 import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
+import { RUNTIME_VERSION_INFO } from '../colab/runtime-versions.js';
 
 export async function createRuntimeCommand(
   runtimeManager: RuntimeManager,
   options: {
     accelerator?: string;
     shape?: string;
+    runtimeVersion?: string;
   },
 ): Promise<void> {
   const selection = parseAcceleratorSelection(options.accelerator);
@@ -40,14 +42,16 @@ export async function createRuntimeCommand(
       process.exit(1);
   }
 
+  const versionLabel = options.runtimeVersion || undefined;
   const spinner = createSpinner(
-    `Creating ${variantToMachineType(variant)} runtime...`,
+    `Creating ${variantToMachineType(variant)} runtime${versionLabel ? ` (version ${versionLabel})` : ''}...`,
   ).start();
   try {
     const server = await runtimeManager.create({
       variant,
       accelerator: selection.accelerator,
       shape,
+      version: versionLabel,
     });
     if (isJsonMode()) {
       jsonResult({ command: 'runtime.create', label: server.label, endpoint: server.endpoint });
@@ -326,5 +330,49 @@ export async function restartRuntimeCommand(
     throw err;
   } finally {
     client.close();
+  }
+}
+
+export async function listRuntimeVersionsCommand(
+  colabClient: ColabClient,
+): Promise<void> {
+  const spinner = createSpinner('Fetching runtime versions...').start();
+  try {
+    const versions = await colabClient.getRuntimeVersions();
+    spinner.stop();
+
+    if (isJsonMode()) {
+      const items = versions.map((v) => ({
+        version: v,
+        info: RUNTIME_VERSION_INFO.get(v) ?? null,
+      }));
+      jsonResult({ command: 'runtime.versions', versions: items });
+      return;
+    }
+
+    if (versions.length === 0) {
+      console.log('No runtime versions available.');
+      return;
+    }
+
+    console.log(chalk.bold('\nAvailable Runtime Versions:'));
+    for (const v of versions) {
+      const info = RUNTIME_VERSION_INFO.get(v);
+      console.log(`\n  ${chalk.green('●')} ${chalk.bold(v)}${v === versions[0] ? chalk.dim(' (latest)') : ''}`);
+      if (info) {
+        console.log(`    Ubuntu ${info.ubuntu}`);
+        console.log(`    Python ${info.python} | numpy ${info.numpy}`);
+        console.log(`    PyTorch ${info.pytorch} | Jax ${info.jax}`);
+        console.log(`    TensorFlow ${info.tensorflow}`);
+        console.log(`    R ${info.r}`);
+        console.log(`    Julia ${info.julia}`);
+      } else {
+        console.log(chalk.dim(`    (environment details not yet available)`));
+      }
+    }
+    console.log('');
+  } catch (err) {
+    spinner.fail('Failed to fetch runtime versions');
+    throw err;
   }
 }

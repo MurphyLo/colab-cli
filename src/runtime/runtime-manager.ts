@@ -25,6 +25,7 @@ export class RuntimeManager {
     variant: Variant;
     accelerator?: string;
     shape?: Shape;
+    version?: string;
   }): Promise<StoredServer> {
     const id = randomUUID();
     const accelerator = await this.resolveAccelerator(
@@ -36,6 +37,7 @@ export class RuntimeManager {
       variant: options.variant,
       accelerator,
       shape,
+      version: options.version,
     });
 
     const tokenExpiry = new Date(

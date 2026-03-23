@@ -271,9 +271,9 @@ auth-manager.ts: login()
 
 ```
 runtime-manager.ts: create()
-  → colabClient.assign(randomUUID, { variant, accelerator, shape })
+  → colabClient.assign(randomUUID, { variant, accelerator, shape, version })
       内部两步：
-      1. GET /tun/m/assign?nbh=<hash>&variant=GPU → 返回 xsrfToken（或已有 assignment）
+      1. GET /tun/m/assign?nbh=<hash>&variant=GPU[&runtime_version_label=2025.10] → 返回 xsrfToken（或已有 assignment）
       2. POST /tun/m/assign（带 X-Goog-Colab-Token header）→ 返回 assignment
   → 存储 server 信息到 ~/.config/colab-cli/servers.json
   → startDaemon(serverId)
@@ -632,6 +632,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
 - [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr
 - [x] `colab drive-mount`：自动 Drive 挂载（伪 GCE metadata server + DriveFS，一次授权后免浏览器）
+- [x] `runtime versions`：查看可用 runtime 版本及环境详情（Python、PyTorch 等），`runtime create --version` 指定版本
 - [ ] runtime 信息缓存/展示优化
 - [ ] `daemon status` 命令：查看守护进程状态
 
@@ -767,7 +768,8 @@ auth login
 auth status
 auth logout
 runtime available
-runtime create --accelerator <name> [--shape <shape>]
+runtime versions
+runtime create --accelerator <name> [--shape <shape>] [-v <version>]
 runtime list
 runtime destroy [--endpoint <endpoint>]
 runtime restart [--endpoint <endpoint>]

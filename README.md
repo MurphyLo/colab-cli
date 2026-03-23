@@ -77,6 +77,12 @@ List the runtime options available to the current account:
 colab runtime available
 ```
 
+List available runtime versions and their environment details:
+
+```bash
+colab runtime versions
+```
+
 Create a runtime by accelerator name, using Colab UI semantics:
 
 ```bash
@@ -84,6 +90,12 @@ colab runtime create --accelerator CPU
 colab runtime create --accelerator T4 --shape standard
 colab runtime create --accelerator L4 --shape high-ram
 colab runtime create --accelerator v6e-1 --shape high-ram
+```
+
+Optionally pin to a specific runtime version (see `colab runtime versions` for available labels):
+
+```bash
+colab runtime create --accelerator T4 --runtime-version 2025.10
 ```
 
 List active runtimes:
@@ -349,7 +361,8 @@ colab auth login
 colab auth status
 colab auth logout
 colab runtime available
-colab runtime create --accelerator <name> [--shape <shape>]
+colab runtime versions
+colab runtime create --accelerator <name> [--shape <shape>] [-v <version>]
 colab runtime list
 colab runtime destroy [--endpoint <endpoint>]
 colab runtime restart [--endpoint <endpoint>]

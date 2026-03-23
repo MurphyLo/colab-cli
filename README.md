@@ -160,6 +160,11 @@ colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
 
 By default, `exec` uses the most recently created runtime.
 
+If executed code raises a Python exception, the traceback is rendered and
+`colab exec` exits with a non-zero status code. In `--json` mode, the final
+result remains an `{"command":"exec",...}` object and includes `error: true`
+rather than switching to the generic top-level JSON error shape.
+
 If executed code triggers `drive.mount('/content/drive')` or another ephemeral
 Google credential request, the foreground CLI session will prompt for consent,
 open the browser-based OAuth flow, and continue once authorization is complete.
@@ -318,7 +323,7 @@ DATA=$(colab drive mkdir data -p "$ROOT" --json | jq -r '.folderId')
 colab drive upload ./dataset.csv -p "$DATA" --json
 ```
 
-Successful commands emit one or more JSON lines. The final success object includes a `command` field plus command-specific data fields. On error, the command exits non-zero and emits a JSON error object. If interactive consent is required but stdin is non-interactive, the error is:
+Successful commands emit one or more JSON lines. The final success object includes a `command` field plus command-specific data fields. Command-level failures emit a JSON error object and exit non-zero. `colab exec` also exits non-zero when kernel output contains a Python error; in that case the final JSON object is still `{"command":"exec",...}` and includes `error: true`. If interactive consent is required but stdin is non-interactive, the error is:
 
 ```json
 {"error":"consent_required","authType":"dfs_ephemeral","url":"https://accounts.google.com/..."}

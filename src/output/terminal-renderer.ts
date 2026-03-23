@@ -45,8 +45,11 @@ export function renderOutput(output: KernelOutput): void {
 
 export async function renderStream(
   outputs: AsyncGenerator<KernelOutput>,
-): Promise<void> {
+): Promise<boolean> {
+  let hasError = false;
   for await (const output of outputs) {
     renderOutput(output);
+    if (output.type === 'error') hasError = true;
   }
+  return hasError;
 }

@@ -45,6 +45,7 @@ export async function execCommand(
     throw err;
   }
 
+  let hasError = false;
   try {
     const outputs = client.exec(code, {
       handleEphemeralAuth: async (authType) => {
@@ -56,20 +57,26 @@ export async function execCommand(
       const collected: KernelOutput[] = [];
       for await (const output of outputs) {
         collected.push(output);
+        if (output.type === 'error') hasError = true;
       }
-      jsonResult({ command: 'exec', outputs: collected });
+      jsonResult({ command: 'exec', outputs: collected, ...(hasError ? { error: true } : {}) });
     } else if (options.batch) {
       const collected: KernelOutput[] = [];
       for await (const output of outputs) {
         collected.push(output);
+        if (output.type === 'error') hasError = true;
       }
       for (const output of collected) {
         renderOutput(output);
       }
     } else {
-      await renderStream(outputs);
+      hasError = await renderStream(outputs);
     }
   } finally {
     client.close();
+  }
+
+  if (hasError) {
+    process.exitCode = 1;
   }
 }

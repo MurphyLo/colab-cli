@@ -307,6 +307,7 @@ exec.ts: execCommand()
       2. 守护进程转发到 KernelConnection.execute()
       3. 守护进程将 iopub 消息逐条通过 Unix Socket 发回
       4. CLI 端渲染输出（流式或 --batch 模式）
+      5. 如果任一 `KernelOutput` 的 `type === "error"`，CLI 在完成后设置 `process.exitCode = 1`
   → DaemonClient.close()
 
 守护进程内部:
@@ -759,7 +760,7 @@ npm run dev          # watch 模式编译
 
 ### 命令总览
 
-所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象；若流程中需要浏览器 OAuth，则可能先输出一行 `{"event":"auth_required", ...}`。
+所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象；若流程中需要浏览器 OAuth，则可能先输出一行 `{"event":"auth_required", ...}`。命令级失败通常输出 `{"error":"..."}` 并以非零状态退出；`exec` 另有一个特例：如果 kernel 返回 `error` 输出，最终仍输出 `{"command":"exec","outputs":[...],"error":true}`，同时进程以非零状态退出。
 
 ```text
 auth login

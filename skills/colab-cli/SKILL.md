@@ -52,7 +52,7 @@ FOLDER_ID=$(colab drive mkdir models -p "$PARENT" --json | jq -r '.folderId')
 ENDPOINT=$(colab runtime create --accelerator T4 --shape standard --json | jq -r '.endpoint')
 ```
 
-Every JSON object includes a `command` field (e.g. `"drive.mkdir"`, `"runtime.create"`). On error, the output is `{"error":"..."}` with a non-zero exit code.
+Every JSON object includes a `command` field (e.g. `"drive.mkdir"`, `"runtime.create"`). Command-level failures return `{"error":"..."}` with a non-zero exit code. `colab exec --json` has one extra case: if the kernel emits a Python error, the final object is still `{"command":"exec",...}` and includes `error: true`, and the command exits non-zero.
 
 When building scripts that chain folder creation or runtime operations, always use `--json` to avoid parsing spinner output.
 
@@ -107,6 +107,7 @@ colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
 - Use inline code for short snippets.
 - Use `-f` for multi-line scripts or when shell quoting would be fragile.
 - Use `-b` when the user wants final output only rather than streamed logs.
+- If the executed Python code raises an exception, `colab exec` exits non-zero. In `--json` mode, treat `error: true` on the final `command: "exec"` object as an execution failure signal.
 - If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
 
 ### Runtime Filesystem Transfer

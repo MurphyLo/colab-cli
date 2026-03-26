@@ -21,6 +21,9 @@ import { execCommand } from './commands/exec.js';
 import { fsUploadCommand, fsDownloadCommand } from './commands/fs.js';
 import { usageCommand } from './commands/usage.js';
 import {
+  driveLoginCommand,
+  driveLogoutCommand,
+  driveStatusCommand,
   driveListCommand,
   driveUploadCommand,
   driveDownloadCommand,
@@ -32,6 +35,7 @@ import { DriveAuthManager } from './drive/auth.js';
 import { MountAuthManager } from './drive/mount-auth.js';
 import {
   driveMountLoginCommand,
+  driveMountLogoutCommand,
   driveMountCommand,
   driveMountStatusCommand,
 } from './commands/drive-mount.js';
@@ -93,7 +97,11 @@ async function ensureInitialized(): Promise<void> {
 async function ensureLoggedIn(): Promise<void> {
   await ensureInitialized();
   if (!authManager.isLoggedIn()) {
-    console.error('Not logged in. Run `colab auth login` first.');
+    if (isJsonMode()) {
+      jsonError('Not logged in. Run `colab auth login` first.');
+    } else {
+      console.error('Not logged in. Run `colab auth login` first.');
+    }
     process.exit(1);
   }
 }
@@ -250,21 +258,52 @@ fsCmd
 // Drive commands (uses separate OAuth credentials — no Colab login required)
 let driveAuth: DriveAuthManager;
 
-async function ensureDriveAuth(): Promise<DriveAuthManager> {
-  if (!driveAuth) {
-    driveAuth = new DriveAuthManager();
-    await driveAuth.ensureAuthorized();
-  }
+function ensureDriveInit(): DriveAuthManager {
+  if (!driveAuth) driveAuth = new DriveAuthManager();
   return driveAuth;
+}
+
+async function ensureDriveLoggedIn(): Promise<DriveAuthManager> {
+  const da = ensureDriveInit();
+  if (!da.isAuthorized()) {
+    if (isJsonMode()) {
+      jsonError('Drive not authorized. Run `colab drive login` first.');
+    } else {
+      console.error('Drive not authorized. Run `colab drive login` first.');
+    }
+    process.exit(1);
+  }
+  return da;
 }
 
 const drive = program.command('drive').description('Manage files on Google Drive');
 
 drive
+  .command('login')
+  .description('Authorize Google Drive access')
+  .action(async () => {
+    await driveLoginCommand(ensureDriveInit());
+  });
+
+drive
+  .command('logout')
+  .description('Remove stored Google Drive credentials')
+  .action(async () => {
+    await driveLogoutCommand(ensureDriveInit());
+  });
+
+drive
+  .command('status')
+  .description('Show Google Drive authorization status')
+  .action(async () => {
+    await driveStatusCommand(ensureDriveInit());
+  });
+
+drive
   .command('list [folder-id]')
   .description('List files in a Google Drive folder')
   .action(async (folderId) => {
-    const da = await ensureDriveAuth();
+    const da = await ensureDriveLoggedIn();
     await driveListCommand(da, folderId);
   });
 
@@ -273,7 +312,7 @@ drive
   .description('Upload a file to Google Drive (best for large files)')
   .option('-p, --parent <folder-id>', 'Parent folder ID (default: root)')
   .action(async (localPath, opts) => {
-    const da = await ensureDriveAuth();
+    const da = await ensureDriveLoggedIn();
     await driveUploadCommand(da, localPath, opts);
   });
 
@@ -282,7 +321,7 @@ drive
   .description('Download a file from Google Drive')
   .option('-o, --output <path>', 'Local output path')
   .action(async (fileId, opts) => {
-    const da = await ensureDriveAuth();
+    const da = await ensureDriveLoggedIn();
     await driveDownloadCommand(da, fileId, opts);
   });
 
@@ -291,7 +330,7 @@ drive
   .description('Create a folder on Google Drive')
   .option('-p, --parent <folder-id>', 'Parent folder ID (default: root)')
   .action(async (name, opts) => {
-    const da = await ensureDriveAuth();
+    const da = await ensureDriveLoggedIn();
     await driveMkdirCommand(da, name, opts.parent);
   });
 
@@ -300,7 +339,7 @@ drive
   .description('Delete a file or folder on Google Drive')
   .option('--permanent', 'Permanently delete instead of moving to trash')
   .action(async (fileId, opts) => {
-    const da = await ensureDriveAuth();
+    const da = await ensureDriveLoggedIn();
     await driveDeleteCommand(da, fileId, opts);
   });
 
@@ -309,7 +348,7 @@ drive
   .description('Move a file or folder on Google Drive')
   .requiredOption('--to <folder-id>', 'Destination folder ID')
   .action(async (itemId, opts) => {
-    const da = await ensureDriveAuth();
+    const da = await ensureDriveLoggedIn();
     await driveMoveCommand(da, itemId, opts.to);
   });
 
@@ -329,6 +368,13 @@ if (DRIVEFS_CLIENT_ID) {
     .description('Authorize for automatic Google Drive mounting')
     .action(async () => {
       await driveMountLoginCommand();
+    });
+
+  driveMount
+    .command('logout')
+    .description('Remove stored Google Drive mount credentials')
+    .action(async () => {
+      await driveMountLogoutCommand();
     });
 
   driveMount

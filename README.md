@@ -218,11 +218,27 @@ Manage files directly on Google Drive — useful for large files that can be acc
 
 ### Drive Authentication
 
-Drive uses a **separate OAuth flow** from the Colab login. The first time you run any `drive` subcommand, a browser-based authorization prompt will appear. Drive credentials are stored independently at `~/.config/colab-cli/drive-auth.json`.
+Drive uses a **separate OAuth flow** from the Colab login. Sign in explicitly before using Drive commands:
+
+```bash
+colab drive login
+```
+
+Check status or sign out:
+
+```bash
+colab drive status
+colab drive logout
+```
+
+Drive credentials are stored at `~/.config/colab-cli/drive-auth.json`.
 
 ### Commands
 
 ```bash
+colab drive login                             # Authorize Google Drive access
+colab drive logout                            # Remove stored credentials (revokes server-side)
+colab drive status                            # Show authorization status
 colab drive list [folder-id]                  # List files (default: root)
 colab drive upload <local-path> [-p <id>]     # Upload file (resumable for >5 MiB)
 colab drive download <file-id> [-o <path>]    # Download file
@@ -252,7 +268,7 @@ export COLAB_DRIVE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 export COLAB_DRIVE_CLIENT_SECRET=your-client-secret
 ```
 
-After changing credentials, run any `drive` command to re-authorize.
+After changing credentials, run `colab drive login` to re-authorize.
 
 ## Automatic Drive Mounting
 
@@ -279,10 +295,11 @@ colab drive-mount -e <endpoint>          # Mount on a specific runtime
 
 Drive is mounted at `/content/drive`. Subsequent calls to `drive.mount('/content/drive')` in Python code will detect the existing mount and return immediately.
 
-Check authorization status:
+Check status or remove credentials:
 
 ```bash
 colab drive-mount status
+colab drive-mount logout
 ```
 
 ## Runtime Naming and Shape Semantics
@@ -370,6 +387,9 @@ colab usage
 colab exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
 colab fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 colab fs download <remote-path> [-o <local-path>] [-e <endpoint>]
+colab drive login
+colab drive logout
+colab drive status
 colab drive list [folder-id]
 colab drive upload <local-path> [-p <folder-id>]
 colab drive download <file-id> [-o <path>]
@@ -378,6 +398,7 @@ colab drive delete <file-id> [--permanent]
 colab drive move <item-id> --to <folder-id>
 colab drive-mount
 colab drive-mount login
+colab drive-mount logout
 colab drive-mount status
 ```
 

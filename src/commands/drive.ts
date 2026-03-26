@@ -16,6 +16,64 @@ import {
 import { resumableUpload, type DriveUploadProgressEvent } from '../drive/resumable-upload.js';
 import { formatBytes } from '../transfer/common.js';
 
+// --- Login / Logout / Status ---
+
+export async function driveLoginCommand(
+  driveAuth: DriveAuthManager,
+): Promise<void> {
+  if (driveAuth.isAuthorized()) {
+    const email = driveAuth.getEmail();
+    if (isJsonMode()) {
+      jsonResult({ command: 'drive.login', alreadyLoggedIn: true, email: email ?? null });
+    } else {
+      console.log(`Already authorized${email ? ` as ${email}` : ''}.`);
+    }
+    return;
+  }
+
+  await driveAuth.ensureAuthorized();
+  const email = driveAuth.getEmail();
+  if (isJsonMode()) {
+    jsonResult({ command: 'drive.login', email: email ?? null });
+  } else {
+    console.log(`Drive authorized${email ? ` as ${email}` : ''}.`);
+  }
+}
+
+export async function driveLogoutCommand(
+  driveAuth: DriveAuthManager,
+): Promise<void> {
+  if (!driveAuth.isAuthorized()) {
+    if (isJsonMode()) {
+      jsonResult({ command: 'drive.logout', wasLoggedIn: false });
+    } else {
+      console.log('Not authorized.');
+    }
+    return;
+  }
+  const email = driveAuth.getEmail();
+  await driveAuth.logout();
+  if (isJsonMode()) {
+    jsonResult({ command: 'drive.logout', wasLoggedIn: true, email: email ?? null });
+  } else {
+    console.log(`Drive authorization removed${email ? ` (${email})` : ''}.`);
+  }
+}
+
+export async function driveStatusCommand(
+  driveAuth: DriveAuthManager,
+): Promise<void> {
+  const authorized = driveAuth.isAuthorized();
+  const email = authorized ? driveAuth.getEmail() : undefined;
+  if (isJsonMode()) {
+    jsonResult({ command: 'drive.status', authorized, email: email ?? null });
+  } else if (authorized) {
+    console.log(`Drive authorized${email ? ` (${email})` : ''}.`);
+  } else {
+    console.log('Drive not authorized. Run `colab drive login` to sign in.');
+  }
+}
+
 // --- ID validation ---
 
 /**

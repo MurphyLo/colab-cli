@@ -110,6 +110,20 @@ export class MountAuthManager {
     return this.loadStored()?.email;
   }
 
+  async logout(): Promise<void> {
+    const stored = this.loadStored();
+    if (stored) {
+      try {
+        await this.oAuth2Client.revokeToken(stored.refreshToken);
+      } catch {
+        // Token may already be expired/revoked
+      }
+    }
+    this.removeStored();
+    this.accessToken = undefined;
+    this.oAuth2Client.setCredentials({});
+  }
+
   private async refreshIfNeeded(): Promise<void> {
     const expiryDateMs = this.oAuth2Client.credentials.expiry_date;
     if (expiryDateMs && expiryDateMs > Date.now() + REFRESH_MARGIN_MS) {

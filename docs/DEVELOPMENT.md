@@ -76,8 +76,8 @@ colab-cli/
 │   │   ├── runtime.ts               # create / list / destroy / restart
 │   │   ├── exec.ts                  # 代码执行（通过守护进程）
 │   │   ├── fs.ts                    # 文件系统操作：upload / download
-│   │   ├── drive.ts                 # Drive 操作：list / upload / download / mkdir / delete / move
-│   │   └── drive-mount.ts           # Drive 挂载操作：login / mount / status
+│   │   ├── drive.ts                 # Drive 操作：login / logout / status / list / upload / download / mkdir / delete / move
+│   │   └── drive-mount.ts           # Drive 挂载操作：login / logout / mount / status
 │   │
 │   ├── output/
 │   │   ├── json-output.ts           # --json 模式：全局状态、SilentSpinner、jsonResult()
@@ -472,13 +472,15 @@ Drive 使用**独立的 OAuth 流程**，与 Colab 主登录分离。原因：Co
 | OAuth Client | Colab 扩展凭据 | rclone 公共凭据（默认），可通过 `COLAB_DRIVE_CLIENT_ID` 覆盖 |
 | Scope | `profile email colaboratory` | `email drive` |
 | 存储文件 | `~/.config/colab-cli/auth.json` | `~/.config/colab-cli/drive-auth.json` |
-| 触发时机 | `colab auth login` | 首次执行任意 `drive` 子命令时自动触发 |
+| 触发时机 | `colab auth login` | `colab drive login` |
 
 `DriveAuthManager`（`drive/auth.ts`）：
 - 使用与主登录相同的 `runLoopbackFlow()` 执行 OAuth
 - 存储 `{ refreshToken, clientId, email }` 到 `drive-auth.json`
 - 检测 `clientId` 变更 → 自动触发重新授权
 - `getAccessToken()` 在令牌过期前 5 分钟自动刷新
+- `logout()` 通过 `revokeToken(refreshToken)` 撤销服务端令牌后删除本地文件
+- 数据操作子命令（list/upload/download 等）要求先 `drive login`，未授权时报错退出
 
 ### 5.2 Drive API 封装
 
@@ -549,18 +551,20 @@ function createDriveClient(accessToken: string): drive_v3.Drive
 | OAuth Client | rclone 公共凭据（默认） | DriveFS 内嵌凭据（环境变量） |
 | Scope | `email drive` | `email drive` |
 | 存储文件 | `~/.config/colab-cli/drive-auth.json` | `~/.config/colab-cli/drive-mount-auth.json` |
-| 触发时机 | 首次 `drive` 子命令 | `colab drive-mount login` |
+| 触发时机 | `colab drive login` | `colab drive-mount login` |
 
 `MountAuthManager`（`drive/mount-auth.ts`）：
 - 静态方法 `isConfigured()` 检查环境变量是否设置（不实例化即可调用）
 - `ensureAuthorized()` 运行 OAuth 流程（浏览器 loopback），存储 refresh token
 - `getAccessToken()` / `getRefreshToken()` 提供令牌，过期前自动刷新
+- `logout()` 通过 `revokeToken(refreshToken)` 撤销服务端令牌后删除本地文件
+- `colab drive-mount`（挂载命令）要求先 `drive-mount login`，未授权时报错退出
 
 **挂载流程（`drive/mount.ts`）**：
 
 ```
 driveMountCommand()
-  → MountAuthManager.ensureAuthorized()（确保已登录）
+  → MountAuthManager.isAuthorized()（检查已登录，未登录报错退出）
   → 获取目标 runtime（--endpoint 或最新的）
   → DaemonClient.connect(serverId)
   → mountDrive(client, mountAuth)
@@ -625,7 +629,10 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 
 ### 开发路线
 
-- [ ] `fs ls` / `fs rm`：远程文件列表和删除
+- [ ] `fs ls <path>`：列出 runtime 上指定路径的文件/目录。`GET /api/contents/<path>` 对目录会返回含 `content` 数组的响应（每项包含 `name`、`type`、`size`、`last_modified`）。`contents-client.ts` 的 `getContentsMetadata()` 已调用此端点，只需增加目录内容解析和表格格式化输出。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`readDirectory()`）
+- [ ] `fs mkdir <path>`：在 runtime 上创建目录。`POST /api/contents/<path>` body `{ type: "directory" }`，Contents API 不要求父目录已存在。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`createDirectory()`）、`colab-vscode/src/jupyter/client/generated/apis/ContentsApi.ts`（`contentsCreate()`）
+- [ ] `fs rm <path>`：删除 runtime 上的文件或目录。`DELETE /api/contents/<path>`，非空目录需先递归删除子项（参考 vscode 的 `deleteInternal()` 逻辑）或依赖服务端 `recursive` 参数支持。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`delete()` / `deleteInternal()`）
+- [ ] `fs mv <old-path> <new-path>`：重命名/移动 runtime 上的文件或目录。`PATCH /api/contents/<old-path>` body `{ path: "<new-path>" }`，不需要额外复制或删除。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`rename()`）、`colab-vscode/src/jupyter/client/generated/apis/ContentsApi.ts`（`contentsRename()`）
 - [x] `colab drive`：Google Drive 文件管理（list/upload/download/mkdir/delete/move）
 - [ ] 图片输出：`--output-dir` 参数，自动保存 PNG 到指定目录
 - [ ] stdin 透传：拦截 `input_request` 消息并转发到 `readline`
@@ -633,6 +640,9 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr
 - [x] `colab drive-mount`：自动 Drive 挂载（伪 GCE metadata server + DriveFS，一次授权后免浏览器）
 - [x] `runtime versions`：查看可用 runtime 版本及环境详情（Python、PyTorch 等），`runtime create --version` 指定版本
+- [ ] `colab exec --interrupt`（或独立的 `colab runtime interrupt` 命令）：中断正在运行的 Python 代码。守护进程 IPC 协议（`daemon/protocol.ts`）已定义 `{"type": "interrupt"}` 消息类型，需在 `exec.ts` 中发送该消息，并在 `daemon/server.ts` 中调用 `POST /api/kernels/<kernel_id>/interrupt`。colab-cli 已有的生成代码 `jupyter/client/generated/apis/KernelsApi.ts` 中 `KernelsApi.interrupt()` 方法可直接使用。参考：`colab-vscode/src/jupyter/client/generated/apis/KernelsApi.ts`（`KernelsApi.interrupt()` → `POST /api/kernels/{id}/interrupt`）
+- [ ] `colab terminal`（实验性）：在 runtime 上开启交互式 Shell。协议层已完全在 colab-vscode 中验证：WebSocket 连接 `wss://<proxy-url>/colab/tty`（需带 `X-Colab-Runtime-Proxy-Token` header），双向传输 JSON 消息——发送方向：`{ data: string }`（键盘输入）和 `{ cols: number, rows: number }`（窗口 resize）；接收方向：`{ data: string }`（终端输出）。CLI 侧需配合 `node-pty` 或直接操作 `process.stdin`/`stdout` raw mode 实现本地终端。参考：`colab-vscode/src/colab/terminal/colab-terminal-websocket.ts`（`ColabTerminalWebSocket`）、`colab-vscode/src/colab/terminal/colab-pseudoterminal.ts`（`ColabPseudoTerminal`）、`colab-vscode/src/colab/commands/terminal.ts`
+- [ ] `runtime available` 补充不可用加速器信息：`GET /v1/user-info` 响应中已包含 `ineligibleAccelerators` 数组（与 `eligibleAccelerators` 并列），当前 `colab/api.ts` 的 Zod schema 已解析该字段但命令输出中未展示。可在 `runtime available` 输出末尾增加"因订阅等级不可用"列表，帮助用户了解升级路径。参考：`colab-vscode/src/colab/api.ts`（`UserInfo.ineligibleAccelerators: z.array(Accelerator)`）
 - [ ] runtime 信息缓存/展示优化
 - [ ] `daemon status` 命令：查看守护进程状态
 
@@ -776,6 +786,9 @@ runtime restart [--endpoint <endpoint>]
 exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
 fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 fs download <remote-path> [-o <local-path>] [-e <endpoint>]
+drive login
+drive logout
+drive status
 drive list [folder-id]
 drive upload <local-path> [-p <folder-id>]
 drive download <file-id> [-o <path>]
@@ -784,6 +797,7 @@ drive delete <file-id> [--permanent]
 drive move <item-id> --to <folder-id>
 drive-mount                                          # 需要 COLAB_DRIVEFS 环境变量
 drive-mount login
+drive-mount logout
 drive-mount status
 ```
 
@@ -828,10 +842,27 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `transfer/upload.ts` | `colab-runtime-skill/runtime/src/upload.js` | **移植**：从 JS 移植为 TS，适配 ConnectionProvider |
 | `transfer/download.ts` | `colab-vscode/src/jupyter/contents/file-system.ts` (readFile) | **全新**：参考 readFile 的 base64 GET，新增分块并发下载 |
 | `commands/fs.ts` | 无对应 | **全新**：文件系统子命令 |
-| `commands/drive-mount.ts` | 无对应 | **全新**：Drive 挂载子命令（login/mount/status） |
+| `commands/drive-mount.ts` | 无对应 | **全新**：Drive 挂载子命令（login/logout/mount/status） |
 | `drive/mount-auth.ts` | 无对应 | **全新**：DriveFS OAuth 凭据管理（环境变量驱动） |
 | `drive/mount.ts` | 无对应 | **全新**：Drive 挂载执行（伪 GCE metadata server + DriveFS 启动脚本） |
 
+### 未实现功能的 colab-vscode 源码参考
+
+以下功能在 colab-vscode 中已有完整实现，但 colab-cli 尚未移植。所有路径均相对于 `/Users/justin/dev26/colab-runtime-2/colab-vscode/src/`。
+
+| 功能 | colab-vscode 源文件 | 关键类 / 方法 |
+|---|---|---|
+| 交互式终端 WebSocket | `colab/terminal/colab-terminal-websocket.ts` | `ColabTerminalWebSocket` → `wss://<proxy>/colab/tty` |
+| 终端 PTY 仿真（输入/resize/输出） | `colab/terminal/colab-pseudoterminal.ts` | `ColabPseudoTerminal` |
+| 终端命令入口 | `colab/commands/terminal.ts` | `openTerminal()` |
+| 内核中断 | `jupyter/client/generated/apis/KernelsApi.ts` | `KernelsApi.interrupt()` → `POST /api/kernels/{id}/interrupt` |
+| `fs ls`（列目录内容） | `jupyter/contents/file-system.ts` | `ColabFileSystem.readDirectory()` |
+| `fs mkdir`（创建目录） | `jupyter/contents/file-system.ts` | `ColabFileSystem.createDirectory()` |
+| `fs rm`（删除文件/目录，含递归） | `jupyter/contents/file-system.ts` | `ColabFileSystem.delete()` + `deleteInternal()` |
+| `fs mv`（重命名/移动） | `jupyter/contents/file-system.ts` | `ColabFileSystem.rename()` |
+| Contents API 操作（mkdir/delete/rename）| `jupyter/client/generated/apis/ContentsApi.ts` | `contentsCreate()` / `contentsDelete()` / `contentsRename()` |
+| 不可用加速器信息 | `colab/api.ts` | `UserInfo.ineligibleAccelerators: z.array(Accelerator)` |
+
 ---
 
-*最后更新：2026-03-23 补充自动 Drive 挂载（`drive-mount`）架构：MountAuthManager、伪 GCE metadata server、DriveFS 启动流程、ephemeral auth 旁路*
+*最后更新：2026-03-24 补充 colab-vscode 未移植功能清单（`fs ls/mkdir/rm/mv`、内核中断、交互式终端、不可用加速器展示）及 colab-vscode 源码参考表*

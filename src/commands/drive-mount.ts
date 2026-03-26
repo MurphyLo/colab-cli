@@ -2,7 +2,7 @@ import { MountAuthManager } from '../drive/mount-auth.js';
 import { mountDrive } from '../drive/mount.js';
 import { DaemonClient } from '../daemon/client.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
-import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
+import { createSpinner, isJsonMode, jsonError, jsonResult } from '../output/json-output.js';
 
 export async function driveMountLoginCommand(): Promise<void> {
   const mountAuth = new MountAuthManager();
@@ -11,8 +11,8 @@ export async function driveMountLoginCommand(): Promise<void> {
   if (isJsonMode()) {
     jsonResult({ command: 'drive-mount.login', email: email ?? null });
   } else {
-    console.error(`Drive mount authorized${email ? ` as ${email}` : ''}.`);
-    console.error('Future runtimes can now mount Drive automatically with `colab drive-mount`.');
+    console.log(`Drive mount authorized${email ? ` as ${email}` : ''}.`);
+    console.log('Future runtimes can now mount Drive automatically with `colab drive-mount`.');
   }
 }
 
@@ -21,13 +21,24 @@ export async function driveMountCommand(
   endpoint?: string,
 ): Promise<void> {
   const mountAuth = new MountAuthManager();
-  await mountAuth.ensureAuthorized();
+  if (!mountAuth.isAuthorized()) {
+    if (isJsonMode()) {
+      jsonError('Drive mount not authorized. Run `colab drive-mount login` first.');
+    } else {
+      console.error('Drive mount not authorized. Run `colab drive-mount login` first.');
+    }
+    process.exit(1);
+  }
 
   const server = endpoint
     ? runtimeManager.getServerByEndpoint(endpoint)
     : runtimeManager.getLatestServer();
   if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
+    if (isJsonMode()) {
+      jsonError('No runtime found. Create one first with `colab runtime create`.');
+    } else {
+      console.error('No runtime found. Create one first with `colab runtime create`.');
+    }
     process.exit(1);
   }
 
@@ -48,6 +59,34 @@ export async function driveMountCommand(
     throw err;
   } finally {
     client.close();
+  }
+}
+
+export async function driveMountLogoutCommand(): Promise<void> {
+  if (!MountAuthManager.isConfigured()) {
+    if (isJsonMode()) {
+      jsonResult({ command: 'drive-mount.logout', configured: false, wasLoggedIn: false });
+    } else {
+      console.log('Drive mount not configured.');
+    }
+    return;
+  }
+
+  const mountAuth = new MountAuthManager();
+  if (!mountAuth.isAuthorized()) {
+    if (isJsonMode()) {
+      jsonResult({ command: 'drive-mount.logout', configured: true, wasLoggedIn: false });
+    } else {
+      console.log('Not authorized.');
+    }
+    return;
+  }
+  const email = mountAuth.getEmail();
+  await mountAuth.logout();
+  if (isJsonMode()) {
+    jsonResult({ command: 'drive-mount.logout', configured: true, wasLoggedIn: true, email: email ?? null });
+  } else {
+    console.log(`Drive mount authorization removed${email ? ` (${email})` : ''}.`);
   }
 }
 

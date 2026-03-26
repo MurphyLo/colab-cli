@@ -44,10 +44,10 @@ const program = new Command();
 
 program
   .name('colab')
-  .description('Interact with Google Colab GPU runtimes from the terminal')
+  .description('interact with Google Colab GPU runtimes from the terminal')
   .version('0.1.0')
-  .option('--verbose', 'Enable verbose logging')
-  .option('--json', 'Output results as JSON to stdout (for scripting)')
+  .option('--verbose', 'enable verbose logging')
+  .option('--json', 'output results as JSON to stdout (for scripting)')
   .configureHelp({
     subcommandTerm: (cmd) => {
       const args = (cmd as any).registeredArguments
@@ -107,11 +107,11 @@ async function ensureLoggedIn(): Promise<void> {
 }
 
 // Auth commands
-const auth = program.command('auth').description('Manage authentication');
+const auth = program.command('auth').description('manage authentication');
 
 auth
   .command('login')
-  .description('Sign in with Google OAuth')
+  .description('sign in with Google OAuth')
   .action(async () => {
     await ensureInitialized();
     await loginCommand(authManager);
@@ -119,7 +119,7 @@ auth
 
 auth
   .command('status')
-  .description('Show authentication status')
+  .description('show authentication status')
   .action(async () => {
     await ensureInitialized();
     await statusCommand(authManager);
@@ -127,29 +127,29 @@ auth
 
 auth
   .command('logout')
-  .description('Sign out and revoke tokens')
+  .description('sign out and revoke tokens')
   .action(async () => {
     await ensureInitialized();
     await logoutCommand(authManager);
   });
 
 // Runtime commands
-const runtime = program.command('runtime').description('Manage runtimes');
+const runtime = program.command('runtime').description('manage runtimes');
 
 runtime
   .command('create')
-  .description('Create a new runtime')
+  .description('create a new runtime')
   .requiredOption(
     '-a, --accelerator <accelerator>',
-    'Accelerator in Colab UI semantics: CPU, H100, G4, A100, L4, T4, v6e-1, or v5e-1',
+    'accelerator in Colab UI semantics: CPU, H100, G4, A100, L4, T4, v6e-1, or v5e-1',
   )
   .option(
     '-s, --shape <shape>',
-    'Machine shape: standard or high-ram',
+    'machine shape: standard or high-ram',
   )
   .option(
     '-v, --runtime-version <version>',
-    'Runtime version label (e.g. 2026.01). See `colab runtime versions`.',
+    'runtime version label (e.g. 2026.01). See `colab runtime versions`.',
   )
   .action(async (opts) => {
     await ensureLoggedIn();
@@ -158,7 +158,7 @@ runtime
 
 runtime
   .command('available')
-  .description('List available accelerators and machine shapes')
+  .description('list available accelerators and machine shapes')
   .action(async () => {
     await ensureLoggedIn();
     await listAvailableRuntimesCommand(colabClient);
@@ -166,7 +166,7 @@ runtime
 
 runtime
   .command('versions')
-  .description('List available runtime versions and their environment details')
+  .description('list available runtime versions and their environment details')
   .action(async () => {
     await ensureLoggedIn();
     await listRuntimeVersionsCommand(colabClient);
@@ -174,7 +174,7 @@ runtime
 
 runtime
   .command('list')
-  .description('List active runtimes')
+  .description('list active runtimes')
   .action(async () => {
     await ensureLoggedIn();
     await listRuntimesCommand(runtimeManager);
@@ -182,8 +182,8 @@ runtime
 
 runtime
   .command('destroy')
-  .description('Destroy a runtime')
-  .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
+  .description('destroy a runtime')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .action(async (opts) => {
     await ensureLoggedIn();
     await destroyRuntimeCommand(runtimeManager, opts.endpoint);
@@ -191,8 +191,8 @@ runtime
 
 runtime
   .command('restart')
-  .description('Restart the kernel without destroying the VM')
-  .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
+  .description('restart the kernel without destroying the VM')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .action(async (opts) => {
     await ensureLoggedIn();
     await restartRuntimeCommand(runtimeManager, opts.endpoint);
@@ -201,7 +201,7 @@ runtime
 // Usage command
 program
   .command('usage')
-  .description('Show subscription tier and compute-unit usage')
+  .description('show subscription tier and compute-unit usage')
   .action(async () => {
     await ensureLoggedIn();
     await usageCommand(colabClient);
@@ -210,10 +210,10 @@ program
 // Exec command
 program
   .command('exec [code]')
-  .description('Execute code on a runtime')
-  .option('-f, --file <path>', 'Execute code from a file')
-  .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
-  .option('-b, --batch', 'Collect all output and print at once instead of streaming')
+  .description('execute code on a runtime')
+  .option('-f, --file <path>', 'execute code from a file')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .option('-b, --batch', 'collect all output and print at once instead of streaming')
   .action(async (code, opts) => {
     await ensureLoggedIn();
     await execCommand(runtimeManager, colabClient, {
@@ -225,13 +225,13 @@ program
   });
 
 // File system commands
-const fsCmd = program.command('fs').description('Transfer files to and from a runtime');
+const fsCmd = program.command('fs').description('transfer files to and from a runtime');
 
 fsCmd
   .command('upload <local-path>')
-  .description('Upload a file to the runtime')
-  .option('-r, --remote-path <path>', 'Remote destination path (default: content/<filename>)')
-  .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
+  .description('upload a file to the runtime')
+  .option('-r, --remote-path <path>', 'remote destination path (default: content/<filename>)')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .action(async (localPath, opts) => {
     await ensureLoggedIn();
     await fsUploadCommand(runtimeManager, {
@@ -243,9 +243,9 @@ fsCmd
 
 fsCmd
   .command('download <remote-path>')
-  .description('Download a file from the runtime')
-  .option('-o, --output <path>', 'Local destination path (default: ./<filename>)')
-  .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
+  .description('download a file from the runtime')
+  .option('-o, --output <path>', 'local destination path (default: ./<filename>)')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .action(async (remotePath, opts) => {
     await ensureLoggedIn();
     await fsDownloadCommand(runtimeManager, {
@@ -276,32 +276,32 @@ async function ensureDriveLoggedIn(): Promise<DriveAuthManager> {
   return da;
 }
 
-const drive = program.command('drive').description('Manage files on Google Drive');
+const drive = program.command('drive').description('manage files on Google Drive');
 
 drive
   .command('login')
-  .description('Authorize Google Drive access')
+  .description('authorize Google Drive access')
   .action(async () => {
     await driveLoginCommand(ensureDriveInit());
   });
 
 drive
   .command('logout')
-  .description('Remove stored Google Drive credentials')
+  .description('remove stored Google Drive credentials')
   .action(async () => {
     await driveLogoutCommand(ensureDriveInit());
   });
 
 drive
   .command('status')
-  .description('Show Google Drive authorization status')
+  .description('show Google Drive authorization status')
   .action(async () => {
     await driveStatusCommand(ensureDriveInit());
   });
 
 drive
   .command('list [folder-id]')
-  .description('List files in a Google Drive folder')
+  .description('list files in a Google Drive folder')
   .action(async (folderId) => {
     const da = await ensureDriveLoggedIn();
     await driveListCommand(da, folderId);
@@ -309,8 +309,8 @@ drive
 
 drive
   .command('upload <local-path>')
-  .description('Upload a file to Google Drive (best for large files)')
-  .option('-p, --parent <folder-id>', 'Parent folder ID (default: root)')
+  .description('upload a file to Google Drive (best for large files)')
+  .option('-p, --parent <folder-id>', 'parent folder ID (default: root)')
   .action(async (localPath, opts) => {
     const da = await ensureDriveLoggedIn();
     await driveUploadCommand(da, localPath, opts);
@@ -318,8 +318,8 @@ drive
 
 drive
   .command('download <file-id>')
-  .description('Download a file from Google Drive')
-  .option('-o, --output <path>', 'Local output path')
+  .description('download a file from Google Drive')
+  .option('-o, --output <path>', 'local output path')
   .action(async (fileId, opts) => {
     const da = await ensureDriveLoggedIn();
     await driveDownloadCommand(da, fileId, opts);
@@ -327,8 +327,8 @@ drive
 
 drive
   .command('mkdir <name>')
-  .description('Create a folder on Google Drive')
-  .option('-p, --parent <folder-id>', 'Parent folder ID (default: root)')
+  .description('create a folder on Google Drive')
+  .option('-p, --parent <folder-id>', 'parent folder ID (default: root)')
   .action(async (name, opts) => {
     const da = await ensureDriveLoggedIn();
     await driveMkdirCommand(da, name, opts.parent);
@@ -336,8 +336,8 @@ drive
 
 drive
   .command('delete <file-id>')
-  .description('Delete a file or folder on Google Drive')
-  .option('--permanent', 'Permanently delete instead of moving to trash')
+  .description('delete a file or folder on Google Drive')
+  .option('--permanent', 'permanently delete instead of moving to trash')
   .action(async (fileId, opts) => {
     const da = await ensureDriveLoggedIn();
     await driveDeleteCommand(da, fileId, opts);
@@ -345,8 +345,8 @@ drive
 
 drive
   .command('move <item-id>')
-  .description('Move a file or folder on Google Drive')
-  .requiredOption('--to <folder-id>', 'Destination folder ID')
+  .description('move a file or folder on Google Drive')
+  .requiredOption('--to <folder-id>', 'destination folder ID')
   .action(async (itemId, opts) => {
     const da = await ensureDriveLoggedIn();
     await driveMoveCommand(da, itemId, opts.to);
@@ -356,8 +356,8 @@ drive
 if (DRIVEFS_CLIENT_ID) {
   const driveMount = program
     .command('drive-mount')
-    .description('Mount Google Drive on a runtime without browser auth')
-    .option('-e, --endpoint <endpoint>', 'Runtime endpoint')
+    .description('mount Google Drive on a runtime without browser auth')
+    .option('-e, --endpoint <endpoint>', 'runtime endpoint')
     .action(async (opts) => {
       await ensureLoggedIn();
       await driveMountCommand(runtimeManager, opts.endpoint);
@@ -365,21 +365,21 @@ if (DRIVEFS_CLIENT_ID) {
 
   driveMount
     .command('login')
-    .description('Authorize for automatic Google Drive mounting')
+    .description('authorize for automatic Google Drive mounting')
     .action(async () => {
       await driveMountLoginCommand();
     });
 
   driveMount
     .command('logout')
-    .description('Remove stored Google Drive mount credentials')
+    .description('remove stored Google Drive mount credentials')
     .action(async () => {
       await driveMountLogoutCommand();
     });
 
   driveMount
     .command('status')
-    .description('Show Google Drive mount authorization status')
+    .description('show Google Drive mount authorization status')
     .action(async () => {
       await driveMountStatusCommand();
     });

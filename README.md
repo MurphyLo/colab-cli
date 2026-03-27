@@ -8,7 +8,7 @@ This project is a migration of the Colab runtime logic from the `colab-vscode` c
 - Listing available Colab runtime options
 - Creating and destroying runtimes
 - Executing Python code on an active runtime via a background daemon
-- Streaming outputs directly to the terminal
+- Streaming outputs directly to the terminal (including automatic image file saving)
 - Uploading and downloading files to/from the runtime filesystem
 - Google Drive file management (upload/download/list/mkdir/delete/move)
 - Automatic Drive mounting on runtimes (no browser required after one-time setup)
@@ -162,6 +162,21 @@ Run in batch mode (collects all output and prints once finished, rather than str
 
 ```bash
 colab exec -b "print('hello')"
+```
+
+Save image outputs to a specific directory:
+
+```bash
+colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.show()"
+# => [saved image/png → ./plots/output-1.png]
+```
+
+If `--output-dir` is not specified, images are saved automatically to `~/.config/colab-cli/outputs/<timestamp>/` (a new timestamped subdirectory per execution, so successive runs never overwrite each other). Supported formats: PNG, JPEG, GIF, SVG.
+
+In `--json` mode, image data in the output is replaced with the saved file path:
+
+```json
+{"command":"exec","outputs":[{"type":"display_data","data":{"image/png":"/path/to/output-1.png"}}]}
 ```
 
 If multiple runtimes exist, target one explicitly:
@@ -384,7 +399,7 @@ colab runtime list
 colab runtime destroy [--endpoint <endpoint>]
 colab runtime restart [--endpoint <endpoint>]
 colab usage
-colab exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
+colab exec [code] [-f <file>] [-e <endpoint>] [-b|--batch] [-o <output-dir>]
 colab fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 colab fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 colab drive login

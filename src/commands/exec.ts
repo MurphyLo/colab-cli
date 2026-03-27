@@ -2,7 +2,7 @@ import fs from 'fs';
 import { ColabClient } from '../colab/client.js';
 import { handleEphemeralAuth } from '../auth/ephemeral.js';
 import { DaemonClient } from '../daemon/client.js';
-import { renderOutput, renderStream } from '../output/terminal-renderer.js';
+import { renderOutput, renderStream, setOutputDir, saveImages } from '../output/terminal-renderer.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
@@ -15,6 +15,7 @@ export async function execCommand(
     file?: string;
     endpoint?: string;
     batch?: boolean;
+    outputDir?: string;
   },
 ): Promise<void> {
   let code: string;
@@ -26,6 +27,8 @@ export async function execCommand(
     console.error('Provide code as argument or use -f <file>');
     process.exit(1);
   }
+
+  setOutputDir(options.outputDir);
 
   const server = options.endpoint
     ? runtimeManager.getServerByEndpoint(options.endpoint)
@@ -53,9 +56,12 @@ export async function execCommand(
       },
     });
     if (isJsonMode()) {
-      // JSON mode: always batch-collect, then emit structured output
+      // JSON mode: batch-collect, save images (replaces base64 with file paths), then emit
       const collected: KernelOutput[] = [];
       for await (const output of outputs) {
+        if (output.type === 'display_data' || output.type === 'execute_result') {
+          saveImages(output.data);
+        }
         collected.push(output);
         if (output.type === 'error') hasError = true;
       }

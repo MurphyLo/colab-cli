@@ -320,6 +320,8 @@ exec.ts: execCommand()
 
 **消息完成条件**：execute_reply (shell channel) 可能先于 iopub 消息到达。因此必须等待 **两个** 信号都收到才标记执行完成：`gotExecuteReply && gotIdle`。
 
+**图片输出处理**：`display_data` 和 `execute_result` 类型的 `KernelOutput` 可能包含图片 MIME 数据（如 `plt.show()` 产生的 `image/png`）。`saveImages()` 在所有模式（终端/batch/JSON）下统一处理：将图片写入文件，并**原地替换** `data[mime]` 为已保存的文件路径。终端模式额外打印 `[saved image/png → ...]` 提示；JSON 模式下 `jsonResult()` 输出中直接包含文件路径而非 base64，避免终端溢出。详见下方 §4.7。
+
 **Jupyter 消息格式**（简化）：
 
 ```json
@@ -391,6 +393,44 @@ CLI: runtime restart
 ```
 
 重启只杀 Python 进程，不销毁 VM。用于 `%pip install` 后重载模块。
+
+### 4.6 图片输出保存
+
+当执行的代码产生图片输出（`plt.show()`、`IPython.display.Image()` 等）时，Jupyter kernel 通过 iopub 发送 `display_data` 或 `execute_result` 消息，其 `data` 字段包含多种 MIME 表示（如 `image/png` 的 base64 编码、`text/plain` 的文本回退）。
+
+**核心函数 `saveImages()`**（`output/terminal-renderer.ts`）是唯一的图片持久化入口，终端模式和 JSON 模式共用：
+
+```
+saveImages(data: Record<string, string>)
+  for each (mime, content) in data:
+    1. 查找 imageExtensionForMimeType[mime] → ext（未命中则跳过）
+    2. 递增全局 outputCounter → 生成文件路径 output-<n>.<ext>
+    3. 写入文件：SVG 为 UTF-8 文本，其余 Buffer.from(base64)
+    4. 原地替换 data[mime] = filePath
+```
+
+**保存目录策略**：
+
+| 场景 | 目录 |
+|------|------|
+| 用户指定 `--output-dir ./plots` | `./plots/`（用户自行管理覆盖） |
+| 未指定（默认） | `~/.config/colab-cli/outputs/<ISO-timestamp>/`（每次 exec 隔离） |
+
+每次 `execCommand()` 入口调用 `setOutputDir()` 重置 counter 和目录。
+
+**各模式的调用路径**：
+
+- **终端（流式/batch）**：`renderOutput()` → `saveImages()` + `printSavedPaths()`（打印 `[saved ...]` 到 stdout）
+- **JSON**：`exec.ts` 循环中直接调用 `saveImages()`，替换后的路径随 `jsonResult()` 输出
+
+**源码溯源**：
+
+| 逻辑 | 来源 | 原始位置 |
+|------|------|----------|
+| MIME→扩展名映射 (`image/png` → `png` 等) | vscode-jupyter | `src/webviews/extension-side/plotView/plotSaveHandler.ts:14-18` (`imageExtensionForMimeType`) |
+| `data` 字段包含所有 MIME 类型（base64 图片 + text/plain 回退） | jupyter-kernel-client | `jupyter_kernel_client/client.py:24-105` (`output_hook()`)，`data: content.get("data")` 原样透传 |
+| SVG 为原始文本、二进制图片为 base64 | Jupyter wire protocol | [Jupyter messaging spec: display_data](https://jupyter-client.readthedocs.io/en/stable/messaging.html#display-data) |
+| `Buffer.from(base64)` 写入文件 | vscode-jupyter | `plotSaveHandler.ts:88` (`fs.writeFile(target, data.data)`)，colab-cli 使用 Node.js `Buffer` 等价实现 |
 
 **竞态防护**：步骤 1-4 期间 `isConnected` 为 `false`，但 `isRestarting` 为 `true`。守护进程健康检查条件为 `!isConnected && !isRestarting`，因此不会在重启窗口内误杀守护进程。
 
@@ -620,12 +660,11 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 
 ### 当前限制
 
-1. **图片输出**：`display_data` 中的 `image/png` 只打印占位符，未实现保存到文件。
-2. **多 runtime**：虽然支持存储多个 server（每个 server 有独立的守护进程），但 `exec` 默认只用最新的一个。
-3. **stdin 支持**：通用的 Python `input()` / `input_request` 透传尚未实现。
+1. **多 runtime**：虽然支持存储多个 server（每个 server 有独立的守护进程），但 `exec` 默认只用最新的一个。
+2. **stdin 支持**：通用的 Python `input()` / `input_request` 透传尚未实现。
    例外：Colab 自定义的 `request_auth`（`drive.mount()` / 临时 Google 凭据传播）已经通过 `auth_required` / `auth_response` 专门支持。
-4. **守护进程自动重连**：WebSocket 断开后守护进程直接退出，依赖下次 exec 自动重启。未实现进程内重连。
-5. **并发 exec**：守护进程按 socket 连接串行处理请求。Jupyter kernel 本身也是串行执行，但多客户端同时连接时行为未定义。
+3. **守护进程自动重连**：WebSocket 断开后守护进程直接退出，依赖下次 exec 自动重启。未实现进程内重连。
+4. **并发 exec**：守护进程按 socket 连接串行处理请求。Jupyter kernel 本身也是串行执行，但多客户端同时连接时行为未定义。
 
 ### 开发路线
 
@@ -634,7 +673,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [ ] `fs rm <path>`：删除 runtime 上的文件或目录。`DELETE /api/contents/<path>`，非空目录需先递归删除子项（参考 vscode 的 `deleteInternal()` 逻辑）或依赖服务端 `recursive` 参数支持。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`delete()` / `deleteInternal()`）
 - [ ] `fs mv <old-path> <new-path>`：重命名/移动 runtime 上的文件或目录。`PATCH /api/contents/<old-path>` body `{ path: "<new-path>" }`，不需要额外复制或删除。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`rename()`）、`colab-vscode/src/jupyter/client/generated/apis/ContentsApi.ts`（`contentsRename()`）
 - [x] `colab drive`：Google Drive 文件管理（list/upload/download/mkdir/delete/move）
-- [ ] 图片输出：`--output-dir` 参数，自动保存 PNG 到指定目录
+- [x] 图片输出：自动保存到 `~/.config/colab-cli/outputs/<timestamp>/`，`--output-dir` 可指定目录；终端和 JSON 模式共用 `saveImages()`
 - [ ] stdin 透传：拦截 `input_request` 消息并转发到 `readline`
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
 - [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr

@@ -104,11 +104,13 @@ for i in range(3):
 colab exec -f script.py
 colab exec -b "print('batch mode')"
 colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
+colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.show()"
 ```
 
 - Use inline code for short snippets.
 - Use `-f` for multi-line scripts or when shell quoting would be fragile.
 - Use `-b` when the user wants final output only rather than streamed logs.
+- Use `-o <dir>` to save image outputs (PNG, JPEG, GIF, SVG) to a specific directory. Without `-o`, images are saved automatically to `~/.config/colab-cli/outputs/<timestamp>/` (a new subdirectory per execution). The saved file path is printed to the terminal or included in `--json` output in place of base64 data.
 - If the executed Python code raises an exception, `colab exec` exits non-zero. In `--json` mode, treat `error: true` on the final `command: "exec"` object as an execution failure signal.
 - If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
 
@@ -171,6 +173,7 @@ colab drive-mount status                 # Check authorization status
 - Runtime state is stored at `~/.config/colab-cli/servers.json`.
 - Drive auth state is stored at `~/.config/colab-cli/drive-auth.json`.
 - Resumable Drive upload state is stored under `~/.config/colab-cli/drive-uploads/`.
+- Image outputs from `exec` are saved under `~/.config/colab-cli/outputs/` (timestamped subdirectories).
 - If a Drive command fails because the input looks like a filename instead of an ID, run `colab drive list` first and use the actual file or folder ID.
 - If a script needs to capture command output (IDs, endpoints, paths), always use `--json`. Without it, all human-readable output goes to stderr via the spinner and `$(...)` will capture nothing.
 - Drive quota or OAuth client issues can be addressed by setting `COLAB_DRIVE_CLIENT_ID` and `COLAB_DRIVE_CLIENT_SECRET`, then re-running a Drive command to re-authorize.

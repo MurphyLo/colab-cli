@@ -214,6 +214,7 @@ program
   .option('-f, --file <path>', 'execute code from a file')
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .option('-b, --batch', 'collect all output and print at once instead of streaming')
+  .option('-o, --output-dir <path>', 'save image outputs (png, jpeg, gif, svg) to this directory')
   .action(async (code, opts) => {
     await ensureLoggedIn();
     await execCommand(runtimeManager, colabClient, {
@@ -221,6 +222,7 @@ program
       file: opts.file,
       endpoint: opts.endpoint,
       batch: opts.batch,
+      outputDir: opts.outputDir,
     });
   });
 

@@ -367,7 +367,7 @@ Without `--use-env-proxy`, newer Node versions will detect the proxy environment
 
 ## JSON Output (Scripting)
 
-Most commands support a global `--json` flag that keeps stdout machine-readable for shell scripts and automation pipelines. `colab exec` is the exception — it relies on an interactive terminal for streaming output, stdin prompts, and Ctrl+C interrupt, so `--json` is ignored (with a warning) when used with `exec`.
+Most commands support a global `--json` flag that keeps stdout machine-readable for shell scripts and automation pipelines (`exec` is excluded — it always uses interactive terminal output).
 
 Human-facing progress and consent prompts are routed to stderr. Commands that need a browser-based OAuth step may emit an `auth_required` JSON event before the final command result:
 
@@ -412,7 +412,7 @@ export COLAB_DRIVE_CLIENT_SECRET=...
 
 ## Command Summary
 
-All commands accept the global `--json` flag for machine-readable output.
+Most commands accept the global `--json` flag for machine-readable output (`exec` excluded).
 
 ```text
 colab auth login

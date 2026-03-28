@@ -42,7 +42,7 @@ When a command could act on multiple runtimes, prefer identifying the target exp
 
 ## JSON Output (`--json`)
 
-All commands accept a global `--json` flag. When set, spinners are suppressed and the result is written as a single JSON object to stdout. Use this for scripting and automation.
+Most commands accept a global `--json` flag. When set, spinners are suppressed and the result is written as a single JSON object to stdout. Use this for scripting and automation. **Exception:** `colab exec` ignores `--json` (with a warning) because it relies on an interactive terminal for streaming output, stdin prompts, and Ctrl+C interrupt.
 
 ```bash
 # Extract a folder ID reliably
@@ -52,7 +52,7 @@ FOLDER_ID=$(colab drive mkdir models -p "$PARENT" --json | jq -r '.folderId')
 ENDPOINT=$(colab runtime create --accelerator T4 --shape standard --json | jq -r '.endpoint')
 ```
 
-Every JSON object includes a `command` field (e.g. `"drive.mkdir"`, `"runtime.create"`). Command-level failures return `{"error":"..."}` with a non-zero exit code. `colab exec --json` has one extra case: if the kernel emits a Python error, the final object is still `{"command":"exec",...}` and includes `error: true`, and the command exits non-zero.
+Every JSON object includes a `command` field (e.g. `"drive.mkdir"`, `"runtime.create"`). Command-level failures return `{"error":"..."}` with a non-zero exit code.
 
 When building scripts that chain folder creation or runtime operations, always use `--json` to avoid parsing spinner output.
 
@@ -113,7 +113,7 @@ colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.s
 - Use `-o <dir>` to save image outputs (PNG, JPEG, GIF, SVG) to a specific directory. Without `-o`, images are saved automatically to `~/.config/colab-cli/outputs/<timestamp>/` (a new subdirectory per execution). The saved file path is printed to the terminal or included in `--json` output in place of base64 data.
 - **Interactive input**: Code using `input()` or `getpass.getpass()` works transparently — prompts are forwarded to the terminal, user input is sent back to the kernel, and execution continues. Password prompts (`getpass`) suppress character echo automatically. In non-TTY contexts (e.g., piped stdin), an empty string is returned immediately.
 - **Ctrl+C interrupt**: Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel (equivalent to the stop button in the Colab UI). The kernel raises `KeyboardInterrupt`, the traceback is printed, and the CLI exits with a non-zero status. A second Ctrl+C force-exits the CLI immediately. This also works during `input()` prompts — Ctrl+C interrupts the kernel instead of sending input.
-- If the executed Python code raises an exception, `colab exec` exits non-zero. In `--json` mode, treat `error: true` on the final `command: "exec"` object as an execution failure signal.
+- If the executed Python code raises an exception, `colab exec` exits non-zero.
 - If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
 
 ### Runtime Filesystem Transfer

@@ -328,7 +328,7 @@ exec.ts: execCommand()
 
 **SIGINT / Ctrl+C 中断**：exec.ts 在执行期间替换 process SIGINT handler。按 Ctrl+C 调用 `client.interrupt()` 发送 interrupt 消息到守护进程，守护进程通过 `POST /api/kernels/<id>/interrupt` 中断 kernel。kernel 发回 `KeyboardInterrupt` error + `status:idle`，CLI 渲染 traceback 后正常退出。第二次 Ctrl+C 强制 `process.exit(1)`。
 
-**图片输出处理**：`display_data` 和 `execute_result` 类型的 `KernelOutput` 可能包含图片 MIME 数据（如 `plt.show()` 产生的 `image/png`）。`saveImages()` 在所有模式（终端/batch/JSON）下统一处理：将图片写入文件，并**原地替换** `data[mime]` 为已保存的文件路径。终端模式额外打印 `[saved image/png → ...]` 提示；JSON 模式下 `jsonResult()` 输出中直接包含文件路径而非 base64，避免终端溢出。详见下方 §4.7。
+**图片输出处理**：`display_data` 和 `execute_result` 类型的 `KernelOutput` 可能包含图片 MIME 数据（如 `plt.show()` 产生的 `image/png`）。`saveImages()` 在终端流式和 batch 模式下统一处理：将图片写入文件，并**原地替换** `data[mime]` 为已保存的文件路径，同时打印 `[saved image/png → ...]` 提示。详见下方 §4.7。
 
 **Jupyter 消息格式**（简化）：
 
@@ -493,7 +493,8 @@ saveImages(data: Record<string, string>)
 **各模式的调用路径**：
 
 - **终端（流式/batch）**：`renderOutput()` → `saveImages()` + `printSavedPaths()`（打印 `[saved ...]` 到 stdout）
-- **JSON**：`exec.ts` 循环中直接调用 `saveImages()`，替换后的路径随 `jsonResult()` 输出
+
+> **注意**：`exec` 不支持 `--json` 模式。如果调用方指定了 `--json`，exec 会打印警告并忽略该标志，回退到终端模式。这是因为 exec 依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断，与 JSON 的批量收集语义不兼容。
 
 **源码溯源**：
 
@@ -743,10 +744,10 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [ ] `fs rm <path>`：删除 runtime 上的文件或目录。`DELETE /api/contents/<path>`，非空目录需先递归删除子项（参考 vscode 的 `deleteInternal()` 逻辑）或依赖服务端 `recursive` 参数支持。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`delete()` / `deleteInternal()`）
 - [ ] `fs mv <old-path> <new-path>`：重命名/移动 runtime 上的文件或目录。`PATCH /api/contents/<old-path>` body `{ path: "<new-path>" }`，不需要额外复制或删除。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`rename()`）、`colab-vscode/src/jupyter/client/generated/apis/ContentsApi.ts`（`contentsRename()`）
 - [x] `colab drive`：Google Drive 文件管理（list/upload/download/mkdir/delete/move）
-- [x] 图片输出：自动保存到 `~/.config/colab-cli/outputs/<timestamp>/`，`--output-dir` 可指定目录；终端和 JSON 模式共用 `saveImages()`
+- [x] 图片输出：自动保存到 `~/.config/colab-cli/outputs/<timestamp>/`，`--output-dir` 可指定目录；终端流式和 batch 模式共用 `saveImages()`
 - [x] stdin 透传 + Ctrl+C 中断：拦截 `input_request` → readline/raw mode 获取用户输入 → `input_reply`；Ctrl+C → `interrupt` → kernel 中断 → 渲染 traceback
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
-- [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr
+- [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，非 exec 命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr。`exec` 不支持 `--json`（打印警告并忽略），因为 exec 依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断
 - [x] `colab drive-mount`：自动 Drive 挂载（伪 GCE metadata server + DriveFS，一次授权后免浏览器）
 - [x] `runtime versions`：查看可用 runtime 版本及环境详情（Python、PyTorch 等），`runtime create --version` 指定版本
 - [x] Ctrl+C 中断 kernel 执行：exec 期间 Ctrl+C → `client.interrupt()` → daemon → `POST /api/kernels/<id>/interrupt` → kernel 发回 KeyboardInterrupt traceback → CLI 渲染后正常退出；第二次 Ctrl+C force exit
@@ -880,7 +881,7 @@ npm run dev          # watch 模式编译
 
 ### 命令总览
 
-所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象；若流程中需要浏览器 OAuth，则可能先输出一行 `{"event":"auth_required", ...}`。命令级失败通常输出 `{"error":"..."}` 并以非零状态退出；`exec` 另有一个特例：如果 kernel 返回 `error` 输出，最终仍输出 `{"command":"exec","outputs":[...],"error":true}`，同时进程以非零状态退出。
+除 `exec` 外的所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象；若流程中需要浏览器 OAuth，则可能先输出一行 `{"event":"auth_required", ...}`。命令级失败通常输出 `{"error":"..."}` 并以非零状态退出。`exec` 忽略 `--json`（打印警告），因为它依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断。
 
 ```text
 auth login

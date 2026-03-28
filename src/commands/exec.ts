@@ -3,10 +3,10 @@ import readline from 'readline';
 import { ColabClient } from '../colab/client.js';
 import { handleEphemeralAuth } from '../auth/ephemeral.js';
 import { DaemonClient } from '../daemon/client.js';
-import { renderOutput, renderStream, setOutputDir, saveImages } from '../output/terminal-renderer.js';
+import { renderOutput, renderStream, setOutputDir } from '../output/terminal-renderer.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
-import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
+import { createSpinner, isJsonMode, setJsonMode } from '../output/json-output.js';
 
 export async function execCommand(
   runtimeManager: RuntimeManager,
@@ -27,6 +27,11 @@ export async function execCommand(
   } else {
     console.error('Provide code as argument or use -f <file>');
     process.exit(1);
+  }
+
+  if (isJsonMode()) {
+    console.error('Warning: --json is not supported for `exec` and will be ignored.');
+    setJsonMode(false);
   }
 
   setOutputDir(options.outputDir);
@@ -75,18 +80,7 @@ export async function execCommand(
         return readLine(prompt, process.stdout, doInterrupt);
       },
     });
-    if (isJsonMode()) {
-      // JSON mode: batch-collect, save images (replaces base64 with file paths), then emit
-      const collected: KernelOutput[] = [];
-      for await (const output of outputs) {
-        if (output.type === 'display_data' || output.type === 'execute_result') {
-          saveImages(output.data);
-        }
-        collected.push(output);
-        if (output.type === 'error') hasError = true;
-      }
-      jsonResult({ command: 'exec', outputs: collected, ...(hasError ? { error: true } : {}) });
-    } else if (options.batch) {
+    if (options.batch) {
       const collected: KernelOutput[] = [];
       for await (const output of outputs) {
         collected.push(output);
@@ -173,6 +167,7 @@ function readPassword(
     const cleanup = () => {
       stdin.removeListener('data', onData);
       stdin.setRawMode(wasRaw);
+      stdin.pause();
       output.write('\n');
     };
 

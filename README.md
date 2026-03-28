@@ -8,6 +8,7 @@ This project is a migration of the Colab runtime logic from the `colab-vscode` c
 - Listing available Colab runtime options
 - Creating and destroying runtimes
 - Executing Python code on an active runtime via a background daemon
+- Interactive stdin support (`input()` / `getpass`) and Ctrl+C kernel interrupt
 - Streaming outputs directly to the terminal (including automatic image file saving)
 - Uploading and downloading files to/from the runtime filesystem
 - Google Drive file management (upload/download/list/mkdir/delete/move)
@@ -187,10 +188,43 @@ colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
 
 By default, `exec` uses the most recently created runtime.
 
+### Interactive Input
+
+Code that calls Python's `input()` or `getpass.getpass()` works transparently --
+the prompt is forwarded to the terminal, user input is sent back to the kernel,
+and execution continues:
+
+```bash
+colab exec "name = input('Name: '); print(f'Hello {name}')"
+# Name: Alice         ← you type here
+# Hello Alice
+```
+
+Password prompts (`getpass`) suppress character echo automatically.
+
+### Ctrl+C (Interrupt)
+
+Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel
+(equivalent to the stop button in Colab UI). The kernel raises
+`KeyboardInterrupt`, the traceback is rendered, and the CLI exits normally:
+
+```bash
+colab exec "import time; time.sleep(9999)"
+# ^C
+# KeyboardInterrupt                         Traceback (most recent call last)
+# ...
+```
+
+A second Ctrl+C force-exits the CLI immediately.
+
+### Error Handling
+
 If executed code raises a Python exception, the traceback is rendered and
 `colab exec` exits with a non-zero status code. In `--json` mode, the final
 result remains an `{"command":"exec",...}` object and includes `error: true`
 rather than switching to the generic top-level JSON error shape.
+
+### Drive Mounting
 
 If executed code triggers `drive.mount('/content/drive')` or another ephemeral
 Google credential request, the foreground CLI session will prompt for consent,

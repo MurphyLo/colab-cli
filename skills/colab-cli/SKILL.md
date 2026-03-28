@@ -2,7 +2,7 @@
 name: colab-cli
 description: "Use this skill whenever the user wants to operate Google Colab from the terminal: authenticate, inspect available runtimes, create or destroy a runtime, restart a kernel, check CCU usage, execute Python remotely, upload or download files to a Colab runtime, manage files in Google Drive through `colab drive`, or mount Drive on a runtime via `colab drive-mount`. Prefer this skill even if the user does not mention `colab-cli` explicitly but asks to use a Colab GPU or TPU, run code on Colab from a shell, move files to `/content`, move large files through Drive, mount Drive automatically, or troubleshoot Colab auth, Drive auth, quota, proxy, or runtime lifecycle issues."
 metadata:
-  short-description: Use the `colab` CLI for Colab auth, runtime, exec, fs, usage, Drive, and Drive mount tasks
+  short-description: Use the `colab` CLI for Colab auth, runtime, exec (with stdin/interrupt), fs, usage, Drive, and Drive mount tasks
 ---
 
 # Colab CLI
@@ -111,6 +111,8 @@ colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.s
 - Use `-f` for multi-line scripts or when shell quoting would be fragile.
 - Use `-b` when the user wants final output only rather than streamed logs.
 - Use `-o <dir>` to save image outputs (PNG, JPEG, GIF, SVG) to a specific directory. Without `-o`, images are saved automatically to `~/.config/colab-cli/outputs/<timestamp>/` (a new subdirectory per execution). The saved file path is printed to the terminal or included in `--json` output in place of base64 data.
+- **Interactive input**: Code using `input()` or `getpass.getpass()` works transparently — prompts are forwarded to the terminal, user input is sent back to the kernel, and execution continues. Password prompts (`getpass`) suppress character echo automatically. In non-TTY contexts (e.g., piped stdin), an empty string is returned immediately.
+- **Ctrl+C interrupt**: Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel (equivalent to the stop button in the Colab UI). The kernel raises `KeyboardInterrupt`, the traceback is printed, and the CLI exits with a non-zero status. A second Ctrl+C force-exits the CLI immediately. This also works during `input()` prompts — Ctrl+C interrupts the kernel instead of sending input.
 - If the executed Python code raises an exception, `colab exec` exits non-zero. In `--json` mode, treat `error: true` on the final `command: "exec"` object as an execution failure signal.
 - If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
 
@@ -175,6 +177,8 @@ colab drive-mount status                 # Check authorization status
 - Resumable Drive upload state is stored under `~/.config/colab-cli/drive-uploads/`.
 - Image outputs from `exec` are saved under `~/.config/colab-cli/outputs/` (timestamped subdirectories).
 - If a Drive command fails because the input looks like a filename instead of an ID, run `colab drive list` first and use the actual file or folder ID.
+- If `input()` prompts are not appearing or return empty, check that stdin is a TTY. In non-TTY mode (piped input, CI), prompts are skipped and empty strings are returned.
+- If Ctrl+C does not interrupt a long-running kernel execution, press Ctrl+C a second time to force-exit the CLI process.
 - If a script needs to capture command output (IDs, endpoints, paths), always use `--json`. Without it, all human-readable output goes to stderr via the spinner and `$(...)` will capture nothing.
 - Drive quota or OAuth client issues can be addressed by setting `COLAB_DRIVE_CLIENT_ID` and `COLAB_DRIVE_CLIENT_SECRET`, then re-running a Drive command to re-authorize.
 - For exact flag syntax or new subcommands, re-check `colab --help` or the relevant subcommand help instead of guessing.

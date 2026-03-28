@@ -43,6 +43,7 @@ function isSocketAlive(socketPath: string): Promise<boolean> {
 interface ExecContext {
   socket: net.Socket;
   pendingAuthRequests: Map<string, (error?: string) => void>;
+  pendingStdinResolve?: (value: string | undefined) => void;
 }
 
 async function main() {
@@ -237,6 +238,18 @@ function handleClient(
           }
           const outputs = await kernel.execute(msg.code);
           for await (const output of outputs) {
+            if (output.type === 'input_request') {
+              send({ type: 'input_request', prompt: output.prompt, password: output.password });
+              const value = await new Promise<string | undefined>((resolve) => {
+                execContext.pendingStdinResolve = resolve;
+              });
+              execContext.pendingStdinResolve = undefined;
+              if (value !== undefined) {
+                kernel.sendStdinReply(value);
+              }
+              // undefined means kernel was interrupted — skip reply, continue consuming outputs
+              continue;
+            }
             send({ type: 'output', output });
           }
           send({ type: 'exec_done' });
@@ -261,8 +274,21 @@ function handleClient(
         resolve(msg.error);
         break;
       }
+      case 'stdin_reply': {
+        const resolve = execContext.pendingStdinResolve;
+        if (resolve) {
+          execContext.pendingStdinResolve = undefined;
+          resolve(msg.value);
+        }
+        break;
+      }
       case 'interrupt':
         kernel.interrupt().catch(() => {});
+        // Cancel pending stdin wait so the for-await loop unblocks
+        if (execContext.pendingStdinResolve) {
+          execContext.pendingStdinResolve(undefined);
+          execContext.pendingStdinResolve = undefined;
+        }
         break;
       case 'restart':
         try {
@@ -287,6 +313,10 @@ function handleClient(
       resolve('Foreground CLI session closed before authorization completed');
     }
     execContext.pendingAuthRequests.clear();
+    if (execContext.pendingStdinResolve) {
+      execContext.pendingStdinResolve('');
+      execContext.pendingStdinResolve = undefined;
+    }
     if (execState.activeExecContext === execContext) {
       execState.activeExecContext = undefined;
     }

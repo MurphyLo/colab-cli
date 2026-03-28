@@ -57,6 +57,7 @@ export class DaemonClient {
     code: string,
     options?: {
       handleEphemeralAuth?: (authType: AuthType) => Promise<void>;
+      handleStdinRequest?: (prompt: string, password: boolean) => Promise<string>;
     },
   ): AsyncGenerator<KernelOutput> {
     this.send({ type: 'exec', code });
@@ -79,6 +80,19 @@ export class DaemonClient {
             requestId: msg.requestId,
             ...(error ? { error } : {}),
           });
+          break;
+        }
+
+        case 'input_request': {
+          try {
+            let value = '';
+            if (options?.handleStdinRequest) {
+              value = await options.handleStdinRequest(msg.prompt, msg.password);
+            }
+            this.send({ type: 'stdin_reply', value });
+          } catch {
+            // Interrupted — don't send reply; kernel will be interrupted separately
+          }
           break;
         }
 

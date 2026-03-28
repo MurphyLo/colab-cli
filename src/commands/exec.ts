@@ -1,4 +1,5 @@
 import fs from 'fs';
+import readline from 'readline';
 import { ColabClient } from '../colab/client.js';
 import { handleEphemeralAuth } from '../auth/ephemeral.js';
 import { DaemonClient } from '../daemon/client.js';
@@ -48,11 +49,30 @@ export async function execCommand(
     throw err;
   }
 
+  // Override SIGINT: interrupt kernel instead of exiting process.
+  // First Ctrl+C sends interrupt to kernel; second Ctrl+C force-exits.
+  const origSigint = process.rawListeners('SIGINT').slice();
+  process.removeAllListeners('SIGINT');
+  let interrupted = false;
+  const doInterrupt = () => {
+    if (interrupted) process.exit(1);
+    interrupted = true;
+    client.interrupt();
+  };
+  process.on('SIGINT', doInterrupt);
+
   let hasError = false;
   try {
     const outputs = client.exec(code, {
       handleEphemeralAuth: async (authType) => {
         await handleEphemeralAuth(colabClient, server.endpoint, authType, server.label);
+      },
+      handleStdinRequest: async (prompt, password) => {
+        if (!process.stdin.isTTY) return '';
+        if (password) {
+          return readPassword(prompt, process.stdout, doInterrupt);
+        }
+        return readLine(prompt, process.stdout, doInterrupt);
       },
     });
     if (isJsonMode()) {
@@ -79,10 +99,108 @@ export async function execCommand(
       hasError = await renderStream(outputs);
     }
   } finally {
+    process.removeAllListeners('SIGINT');
+    for (const fn of origSigint) {
+      process.on('SIGINT', fn as (...args: any[]) => void);
+    }
     client.close();
   }
 
   if (hasError) {
     process.exitCode = 1;
   }
+}
+
+function readLine(
+  prompt: string,
+  output: NodeJS.WritableStream,
+  onInterrupt: () => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: output as NodeJS.WritableStream & { fd?: number },
+      terminal: process.stdin.isTTY,
+    });
+    let settled = false;
+    rl.question(prompt, (answer) => {
+      if (!settled) {
+        settled = true;
+        rl.close();
+        resolve(answer);
+      }
+    });
+    // Ctrl+C: interrupt kernel, reject so no input_reply is sent
+    rl.on('SIGINT', () => {
+      if (!settled) {
+        settled = true;
+        rl.close();
+        onInterrupt();
+        reject(new Error('interrupted'));
+      }
+    });
+    // Ctrl+D (EOF): send empty string as input
+    rl.on('close', () => {
+      if (!settled) {
+        settled = true;
+        resolve('');
+      }
+    });
+  });
+}
+
+function readPassword(
+  prompt: string,
+  output: NodeJS.WritableStream,
+  onInterrupt: () => void,
+): Promise<string> {
+  output.write(prompt);
+
+  if (!process.stdin.isTTY) {
+    output.write('\n');
+    return Promise.resolve('');
+  }
+
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+
+    let input = '';
+
+    const cleanup = () => {
+      stdin.removeListener('data', onData);
+      stdin.setRawMode(wasRaw);
+      output.write('\n');
+    };
+
+    const onData = (data: string) => {
+      for (const char of data) {
+        switch (char) {
+          case '\r':
+          case '\n':
+          case '\u0004': // Ctrl+D / EOF
+            cleanup();
+            resolve(input);
+            return;
+          case '\u0003': // Ctrl+C — interrupt kernel, reject so no input_reply is sent
+            cleanup();
+            onInterrupt();
+            reject(new Error('interrupted'));
+            return;
+          case '\u007f':
+          case '\b': // Backspace
+            input = input.slice(0, -1);
+            break;
+          default:
+            input += char;
+            break;
+        }
+      }
+    };
+
+    stdin.on('data', onData);
+  });
 }

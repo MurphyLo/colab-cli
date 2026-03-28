@@ -197,6 +197,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 ```jsonl
 {"type": "exec", "code": "print('hello')"}
 {"type": "auth_response", "requestId": "<uuid>", "error": "optional error"}
+{"type": "stdin_reply", "value": "user input text"}
 {"type": "interrupt"}
 {"type": "restart"}
 {"type": "ping"}
@@ -207,6 +208,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 ```jsonl
 {"type": "ready"}
 {"type": "auth_required", "requestId": "<uuid>", "authType": "dfs_ephemeral"}
+{"type": "input_request", "prompt": "Enter name: ", "password": false}
 {"type": "output", "output": {"type": "stream", "name": "stdout", "text": "hello\n"}}
 {"type": "exec_done"}
 {"type": "exec_error", "message": "..."}
@@ -222,9 +224,11 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 3. CLI 发送 `exec` 请求
 4. 如果 kernel 在执行期间触发 `request_auth`（如 `drive.mount()`），守护进程发送 `auth_required`
 5. CLI 前台进程负责浏览器/OAuth 交互，并回送 `auth_response`
-6. 守护进程继续逐条发送 `output` 消息（流式）
-7. 守护进程发送 `exec_done` 或 `exec_error`
-8. CLI 断开（守护进程继续运行）
+6. 如果 kernel 执行 Python `input()` / `getpass()`，守护进程发送 `input_request`
+7. CLI 前台进程通过 readline / raw mode 获取用户输入，回送 `stdin_reply`
+8. 守护进程继续逐条发送 `output` 消息（流式）
+9. 守护进程发送 `exec_done` 或 `exec_error`
+10. CLI 断开（守护进程继续运行）
 
 ### 3.5 生命周期管理
 
@@ -312,13 +316,17 @@ exec.ts: execCommand()
 
 守护进程内部:
   KernelConnection.execute(code)
-    1. 发送 execute_request 到 WebSocket shell channel
+    1. 发送 execute_request 到 WebSocket shell channel（allow_stdin: true）
     2. 返回 AsyncGenerator<KernelOutput>
     3. 逐个 yield iopub 消息：stream, execute_result, display_data, error, status
-    4. 完成条件：收到 execute_reply (shell) AND status:idle (iopub)
+    4. 如果 kernel 发送 input_request (stdin channel)，yield InputRequestOutput
+       → server.ts 拦截后发送 input_request 到 CLI，等待 stdin_reply → 调用 kernel.sendStdinReply()
+    5. 完成条件：收到 execute_reply (shell) AND status:idle (iopub)
 ```
 
 **消息完成条件**：execute_reply (shell channel) 可能先于 iopub 消息到达。因此必须等待 **两个** 信号都收到才标记执行完成：`gotExecuteReply && gotIdle`。
+
+**SIGINT / Ctrl+C 中断**：exec.ts 在执行期间替换 process SIGINT handler。按 Ctrl+C 调用 `client.interrupt()` 发送 interrupt 消息到守护进程，守护进程通过 `POST /api/kernels/<id>/interrupt` 中断 kernel。kernel 发回 `KeyboardInterrupt` error + `status:idle`，CLI 渲染 traceback 后正常退出。第二次 Ctrl+C 强制 `process.exit(1)`。
 
 **图片输出处理**：`display_data` 和 `execute_result` 类型的 `KernelOutput` 可能包含图片 MIME 数据（如 `plt.show()` 产生的 `image/png`）。`saveImages()` 在所有模式（终端/batch/JSON）下统一处理：将图片写入文件，并**原地替换** `data[mime]` 为已保存的文件路径。终端模式额外打印 `[saved image/png → ...]` 提示；JSON 模式下 `jsonResult()` 输出中直接包含文件路径而非 base64，避免终端溢出。详见下方 §4.7。
 
@@ -374,7 +382,71 @@ exec.ts: execCommand()
 
 **本地 Drive 凭据旁路**：当 `MountAuthManager.isConfigured()` 且已授权时（即 DriveFS 环境变量已配置且 `drive-mount login` 已完成），`handleEphemeralAuth()` 对 `DFS_EPHEMERAL` 类型直接 return，跳过整个 `propagateCredentials` 流程。这使得 Python 代码中的 `drive.mount()` 无需浏览器交互——`blocking_request('request_auth')` 成功返回后，`drive.mount()` 检测到已存在的挂载点即刻完成。
 
-### 4.5 内核重启
+### 4.5 stdin 透传与 Ctrl+C 中断
+
+当 Python 代码执行 `input()` 或 `getpass.getpass()` 时，kernel 在 stdin channel 发送 `input_request` 消息，等待 `input_reply` 后继续执行。
+
+**完整数据流**：
+
+```
+Kernel 执行 input("Enter name: ")
+  → kernel 发送 input_request (stdin channel, parent_header.msg_id = execute_request.msg_id)
+    → kernel-connection.ts: executeAndStream handler 检测到 channel='stdin', msg_type='input_request'
+      → 作为 InputRequestOutput 推入 generator queue（与 iopub 输出同一队列，保证顺序）
+        → server.ts: for await 循环遇到 input_request 类型
+          → 发送 {"type":"input_request","prompt":"Enter name: ","password":false} 到 CLI
+          → 创建 pendingStdinResolve promise 并 await
+            → client.ts: exec() generator 收到 input_request
+              → 调用 handleStdinRequest(prompt, password) 回调
+                → exec.ts: readLine() 通过 readline.question() 提示用户
+                ← 用户输入 "Alice" 并回车
+              ← 返回 "Alice"
+            ← 发送 {"type":"stdin_reply","value":"Alice"} 到守护进程
+          ← pendingStdinResolve 被 resolve
+        ← 调用 kernel.sendStdinReply("Alice")
+      ← 发送 input_reply (channel='stdin', content.value="Alice") 到 WebSocket
+    ← kernel 收到输入，input() 返回 "Alice"
+  ← kernel 继续执行
+```
+
+**Ctrl+C 中断流程**（对齐 `jupyter-kernel-client` 的 `_stdin_hook_default` 行为）：
+
+```
+用户在 stdin 等待期间按 Ctrl+C
+  → exec.ts: readLine 的 rl.on('SIGINT') 或 readPassword 的 \u0003 触发
+    → 调用 onInterrupt() = doInterrupt()
+      → client.interrupt() → 发送 {"type":"interrupt"} 到守护进程
+    → reject(new Error('interrupted'))  ← 不发送 stdin_reply（kernel 不需要回复了）
+  → 守护进程收到 interrupt 消息:
+    → kernel.interrupt() → POST /api/kernels/<id>/interrupt
+    → pendingStdinResolve(undefined) → for await 解除阻塞，跳过 sendStdinReply
+  → kernel 被中断:
+    → 发送 error (ename='KeyboardInterrupt') + status:idle → 通过 generator → CLI 渲染 traceback
+  → exec.ts: finally 块恢复原始 SIGINT handler
+```
+
+**非 stdin 期间的 Ctrl+C**：terminal 处于 cooked mode，Ctrl+C 产生 process SIGINT → `doInterrupt()` → `client.interrupt()`。kernel 中断后发回 error + idle，CLI 渲染后正常退出。
+
+**password 模式**：当 `input_request.content.password === true`（Python `getpass.getpass()` 触发），`readPassword()` 使用 raw mode 读取，不回显字符。
+
+**非 TTY 行为**：当 `process.stdin.isTTY === false`（管道输入等），`handleStdinRequest` 返回空字符串。
+
+**排序保证**：`input_request` 通过与 iopub 输出相同的 generator queue 流转（`executeAndStream` handler 统一推送）。由于 Colab 使用单条多路复用 WebSocket，消息到达顺序即发送顺序，因此 `print()` 的输出一定在 `input()` 的 prompt 之前被渲染。
+
+**源码溯源**：
+
+| 逻辑 | 来源项目 | 原始位置 | 迁移说明 |
+|------|----------|----------|----------|
+| stdin hook 模式（password 区分 + SIGINT 处理 + 不发送 reply） | jupyter-kernel-client | `wsclient.py:1307-1338` (`_stdin_hook_default`) | 核心逻辑直接翻译为 Node.js：`getpass`→`readPassword`(raw mode)，`input`→`readLine`(readline)，SIGINT double-handler→`doInterrupt()`+`reject` |
+| `input()` 方法（构造 `input_reply` 消息） | jupyter-kernel-client | `wsclient.py:1135-1147` (`input()`) | `KernelConnection.sendStdinReply()` 完全对齐：`content: { value }`, `channel: 'stdin'` |
+| `execute_interactive()` 的 stdin/iopub 交替轮询 | jupyter-kernel-client | `wsclient.py:1070-1112` (`execute_interactive`) | 架构差异：原实现在单线程同步循环中交替检查两个 channel queue；colab-cli 使用 async generator + daemon IPC，通过同一 queue 保证顺序 |
+| `allow_stdin: true` 在 execute_request 中 | jupyter-kernel-client | `wsclient.py:971` | `kernel-connection.ts:143` 已有此设置（原始实现即包含） |
+| daemon IPC 的 request/reply 模式 | colab-cli 自身 | `auth_required` / `auth_response` 模式 | `input_request` / `stdin_reply` 完全复刻相同模式，包括 pending resolve、socket close 清理 |
+| interrupt 中取消 pending stdin | jupyter-kernel-client | `wsclient.py:1328-1330`（KeyboardInterrupt → return 不发 reply） | `server.ts` interrupt case 将 `pendingStdinResolve(undefined)` → for await 跳过 `sendStdinReply` |
+| SIGINT handler 保存/恢复 | jupyter-kernel-client | `wsclient.py:1312-1333`（`signal.signal` save/restore） | `exec.ts` 使用 `process.rawListeners('SIGINT')` save/restore |
+| 第二次 Ctrl+C force exit | 无对应（CLI 特有） | — | `doInterrupt()` 中 `if (interrupted) process.exit(1)` |
+
+### 4.6 内核重启
 
 ```
 CLI: runtime restart
@@ -661,10 +733,8 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 ### 当前限制
 
 1. **多 runtime**：虽然支持存储多个 server（每个 server 有独立的守护进程），但 `exec` 默认只用最新的一个。
-2. **stdin 支持**：通用的 Python `input()` / `input_request` 透传尚未实现。
-   例外：Colab 自定义的 `request_auth`（`drive.mount()` / 临时 Google 凭据传播）已经通过 `auth_required` / `auth_response` 专门支持。
-3. **守护进程自动重连**：WebSocket 断开后守护进程直接退出，依赖下次 exec 自动重启。未实现进程内重连。
-4. **并发 exec**：守护进程按 socket 连接串行处理请求。Jupyter kernel 本身也是串行执行，但多客户端同时连接时行为未定义。
+2. **守护进程自动重连**：WebSocket 断开后守护进程直接退出，依赖下次 exec 自动重启。未实现进程内重连。
+3. **并发 exec**：守护进程按 socket 连接串行处理请求。Jupyter kernel 本身也是串行执行，但多客户端同时连接时行为未定义。
 
 ### 开发路线
 
@@ -674,12 +744,12 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [ ] `fs mv <old-path> <new-path>`：重命名/移动 runtime 上的文件或目录。`PATCH /api/contents/<old-path>` body `{ path: "<new-path>" }`，不需要额外复制或删除。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`rename()`）、`colab-vscode/src/jupyter/client/generated/apis/ContentsApi.ts`（`contentsRename()`）
 - [x] `colab drive`：Google Drive 文件管理（list/upload/download/mkdir/delete/move）
 - [x] 图片输出：自动保存到 `~/.config/colab-cli/outputs/<timestamp>/`，`--output-dir` 可指定目录；终端和 JSON 模式共用 `saveImages()`
-- [ ] stdin 透传：拦截 `input_request` 消息并转发到 `readline`
+- [x] stdin 透传 + Ctrl+C 中断：拦截 `input_request` → readline/raw mode 获取用户输入 → `input_reply`；Ctrl+C → `interrupt` → kernel 中断 → 渲染 traceback
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
 - [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，所有命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr
 - [x] `colab drive-mount`：自动 Drive 挂载（伪 GCE metadata server + DriveFS，一次授权后免浏览器）
 - [x] `runtime versions`：查看可用 runtime 版本及环境详情（Python、PyTorch 等），`runtime create --version` 指定版本
-- [ ] `colab exec --interrupt`（或独立的 `colab runtime interrupt` 命令）：中断正在运行的 Python 代码。守护进程 IPC 协议（`daemon/protocol.ts`）已定义 `{"type": "interrupt"}` 消息类型，需在 `exec.ts` 中发送该消息，并在 `daemon/server.ts` 中调用 `POST /api/kernels/<kernel_id>/interrupt`。colab-cli 已有的生成代码 `jupyter/client/generated/apis/KernelsApi.ts` 中 `KernelsApi.interrupt()` 方法可直接使用。参考：`colab-vscode/src/jupyter/client/generated/apis/KernelsApi.ts`（`KernelsApi.interrupt()` → `POST /api/kernels/{id}/interrupt`）
+- [x] Ctrl+C 中断 kernel 执行：exec 期间 Ctrl+C → `client.interrupt()` → daemon → `POST /api/kernels/<id>/interrupt` → kernel 发回 KeyboardInterrupt traceback → CLI 渲染后正常退出；第二次 Ctrl+C force exit
 - [ ] `colab terminal`（实验性）：在 runtime 上开启交互式 Shell。协议层已完全在 colab-vscode 中验证：WebSocket 连接 `wss://<proxy-url>/colab/tty`（需带 `X-Colab-Runtime-Proxy-Token` header），双向传输 JSON 消息——发送方向：`{ data: string }`（键盘输入）和 `{ cols: number, rows: number }`（窗口 resize）；接收方向：`{ data: string }`（终端输出）。CLI 侧需配合 `node-pty` 或直接操作 `process.stdin`/`stdout` raw mode 实现本地终端。参考：`colab-vscode/src/colab/terminal/colab-terminal-websocket.ts`（`ColabTerminalWebSocket`）、`colab-vscode/src/colab/terminal/colab-pseudoterminal.ts`（`ColabPseudoTerminal`）、`colab-vscode/src/colab/commands/terminal.ts`
 - [ ] `runtime available` 补充不可用加速器信息：`GET /v1/user-info` 响应中已包含 `ineligibleAccelerators` 数组（与 `eligibleAccelerators` 并列），当前 `colab/api.ts` 的 Zod schema 已解析该字段但命令输出中未展示。可在 `runtime available` 输出末尾增加"因订阅等级不可用"列表，帮助用户了解升级路径。参考：`colab-vscode/src/colab/api.ts`（`UserInfo.ineligibleAccelerators: z.array(Accelerator)`）
 - [ ] runtime 信息缓存/展示优化
@@ -869,7 +939,7 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `auth/ephemeral.ts` | `auth/ephemeral.ts` | 中等：前台 CLI 交互 + readline，`--json` 模式下将 prompt 路由到 stderr，并在非 TTY 时返回 `consent_required` |
 | `jupyter/client/index.ts` | `jupyter/client/index.ts` | 中等：去掉 vscode.Uri/Event，简化为 kernels+sessions |
 | `jupyter/client/generated/` | `jupyter/client/generated/` | 无改动（只加 .js 后缀） |
-| `jupyter/kernel-connection.ts` | 无对应 | **全新**：核心组件，实现 Jupyter 线协议 |
+| `jupyter/kernel-connection.ts` | 无对应（stdin 部分参考 `jupyter-kernel-client/wsclient.py`） | **全新**：核心组件，实现 Jupyter 线协议。stdin 透传（`InputRequestOutput`、`sendStdinReply`）参考 jupyter-kernel-client 的 `execute_interactive` + `input()` + `_stdin_hook_default` |
 | `runtime/runtime-manager.ts` | `jupyter/assignments.ts` | 大：简化，去掉事件系统，改为调度守护进程 |
 | `runtime/keep-alive.ts` | `colab/keep-alive.ts` | 大：简化为 setInterval |
 | `runtime/connection-refresher.ts` | `colab/connection-refresher.ts` | 大：简化为 setTimeout 链 |
@@ -894,7 +964,7 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | 交互式终端 WebSocket | `colab/terminal/colab-terminal-websocket.ts` | `ColabTerminalWebSocket` → `wss://<proxy>/colab/tty` |
 | 终端 PTY 仿真（输入/resize/输出） | `colab/terminal/colab-pseudoterminal.ts` | `ColabPseudoTerminal` |
 | 终端命令入口 | `colab/commands/terminal.ts` | `openTerminal()` |
-| 内核中断 | `jupyter/client/generated/apis/KernelsApi.ts` | `KernelsApi.interrupt()` → `POST /api/kernels/{id}/interrupt` |
+| ~~内核中断~~ | ~~`jupyter/client/generated/apis/KernelsApi.ts`~~ | ~~已实现~~：exec 期间 Ctrl+C → `client.interrupt()` → daemon → kernel interrupt |
 | `fs ls`（列目录内容） | `jupyter/contents/file-system.ts` | `ColabFileSystem.readDirectory()` |
 | `fs mkdir`（创建目录） | `jupyter/contents/file-system.ts` | `ColabFileSystem.createDirectory()` |
 | `fs rm`（删除文件/目录，含递归） | `jupyter/contents/file-system.ts` | `ColabFileSystem.delete()` + `deleteInternal()` |
@@ -904,4 +974,4 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 
 ---
 
-*最后更新：2026-03-24 补充 colab-vscode 未移植功能清单（`fs ls/mkdir/rm/mv`、内核中断、交互式终端、不可用加速器展示）及 colab-vscode 源码参考表*
+*最后更新：2026-03-28 实现 stdin 透传（input/getpass）+ Ctrl+C kernel 中断，新增 §4.5 含完整源码溯源*

@@ -41,12 +41,19 @@ export interface StatusOutput {
   executionState: string;
 }
 
+export interface InputRequestOutput {
+  type: 'input_request';
+  prompt: string;
+  password: boolean;
+}
+
 export type KernelOutput =
   | StreamOutput
   | ExecuteResultOutput
   | DisplayDataOutput
   | ErrorOutput
-  | StatusOutput;
+  | StatusOutput
+  | InputRequestOutput;
 
 // Jupyter message schemas for parsing
 const ColabAuthRequestSchema = z.object({
@@ -178,6 +185,28 @@ export class KernelConnection {
     } finally {
       this._restarting = false;
     }
+  }
+
+  sendStdinReply(value: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    const reply: JupyterMessage = {
+      header: {
+        msg_id: uuid(),
+        msg_type: 'input_reply',
+        session: this.clientSessionId,
+        date: new Date().toISOString(),
+        username: 'username',
+        version: '5.0',
+      },
+      content: { value },
+      channel: 'stdin',
+      metadata: {},
+      parent_header: {},
+    };
+
+    this.ws.send(JSON.stringify(reply));
+    log.trace('Stdin reply sent');
   }
 
   close(): void {
@@ -420,6 +449,18 @@ export class KernelConnection {
     const handler = (msg: JupyterMessage) => {
       const msgType = msg.header?.msg_type;
       const channel = msg.channel;
+
+      // Handle stdin input_request (Python input() / getpass())
+      if (channel === 'stdin' && msgType === 'input_request') {
+        push({
+          output: {
+            type: 'input_request',
+            prompt: msg.content?.prompt ?? '',
+            password: msg.content?.password ?? false,
+          },
+        });
+        return;
+      }
 
       if (channel === 'iopub') {
         switch (msgType) {

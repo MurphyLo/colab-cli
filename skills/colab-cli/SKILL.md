@@ -130,7 +130,7 @@ colab exec send 1 --interrupt
 ```
 
 - Use `--bg` to run long tasks without blocking the CLI (exec ID printed to stdout).
-- Use `exec list` to see all executions and their status (running/done/error).
+- Use `exec list` to see all executions and their status (running/done/error/crashed).
 - Use `exec attach <id> --no-wait` to get a snapshot of buffered output and exit immediately. Add `--tail <n>` to limit to the last N outputs.
 - Use `exec attach <id>` (without `--no-wait`) to replay buffered output and continue streaming live output until the execution finishes.
 - Use `exec send <id> --stdin "value"` to respond to a pending `input()` prompt in a background execution.

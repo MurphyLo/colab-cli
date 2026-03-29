@@ -260,7 +260,9 @@ export async function execListCommand(
     for (const e of executions) {
       const started = new Date(e.startedAt).toLocaleString();
       const codeSnippet = e.code.replace(/\n/g, '\\n');
-      const status = e.hasError ? `${e.status}*` : e.status;
+      const status = e.status === 'error' ? 'crashed'
+        : e.hasError ? 'error'
+        : e.status;
       console.log(`${e.execId}\t${status}\t${started}\t${e.outputCount}\t${codeSnippet}`);
     }
   } finally {

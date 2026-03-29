@@ -240,6 +240,8 @@ List all executions:
 colab exec list
 ```
 
+Each execution shows one of four statuses: `running` (in progress), `done` (completed successfully), `error` (Python exception or interrupt), or `crashed` (daemon-level failure).
+
 View buffered output without blocking:
 
 ```bash

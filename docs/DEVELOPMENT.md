@@ -269,6 +269,15 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 
 **GC 策略**：保留最近 50 次执行，超出后删除最早的已完成执行（含日志文件）。
 
+**显示状态映射**：`exec list` 的 STATUS 列将存储层状态映射为用户可见的标签：
+
+| 存储状态 | hasError | 显示标签 | 含义 |
+|---------|----------|---------|------|
+| `running` | — | `running` | 执行中 |
+| `done` | false | `done` | 正常完成 |
+| `done` | true | `error` | 完成但有 Python 异常（如 KeyboardInterrupt、ValueError） |
+| `error` | — | `crashed` | 守护进程级别故障（kernel 断连、daemon 重启等） |
+
 ### 3.6 生命周期管理
 
 | 事件 | 行为 |

@@ -135,7 +135,7 @@ colab exec send 1 --interrupt
 - Use `exec attach <id>` (without `--no-wait`) to replay buffered output and continue streaming live output until the execution finishes.
 - Use `exec send <id> --stdin "value"` to respond to a pending `input()` prompt in a background execution.
 - Use `exec send <id> --interrupt` to interrupt (Ctrl+C equivalent) a background execution.
-- If `input()` is called during background execution with no client attached, an empty string is sent automatically.
+- If `input()` is called during background execution with no client attached, execution waits until stdin is delivered via `exec send <id> --stdin` or a client attaches.
 
 ### Runtime Filesystem Transfer
 

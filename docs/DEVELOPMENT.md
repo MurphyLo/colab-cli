@@ -248,7 +248,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 3. 执行继续在守护进程中进行，输出缓存在 ExecutionStore
 4. 后续 CLI 可通过 `exec_attach`（流式重放 + 续流）或 `exec_attach`（`noWait: true`，快照模式）获取输出
 5. `exec_send` 可发送 stdin 或 interrupt 信号到运行中的执行
-6. 如果执行期间需要 `input()` 但无 CLI attach，自动发送空字符串
+6. 如果执行期间需要 `input()` 但无 CLI attach，执行挂起等待直到通过 `exec_send` 发送 stdin 或有 CLI attach
 
 ### 3.5 ExecutionStore（执行历史管理）
 

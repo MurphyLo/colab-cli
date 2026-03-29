@@ -168,26 +168,23 @@ async function main() {
             active.attachedSocket.write(
               encode({ type: 'input_request', prompt: output.prompt, password: output.password }),
             );
-            const value = await new Promise<string | undefined>((resolve) => {
-              active.pendingStdinResolve = resolve;
-            });
-            active.pendingStdinResolve = undefined;
-            store.clearPendingInput(execId);
-            if (value !== undefined) {
-              kernel.sendStdinReply(value);
-            }
-            // undefined means interrupted — skip reply, continue consuming outputs
-          } else {
-            // No client attached — send empty string to unblock kernel
-            store.clearPendingInput(execId);
-            kernel.sendStdinReply('');
-            store.appendOutput(execId, {
-              type: 'stream',
-              name: 'stderr',
-              text: '[colab-cli] stdin requested but no client attached; sent empty input\n',
-            });
-            // Also forward the synthetic warning to attached client if one appeared in the meantime
           }
+          // Wait for stdin via exec_send, attached client, or interrupt
+          const value = await new Promise<string | undefined>((resolve) => {
+            if (active?.execId === execId) {
+              active.pendingStdinResolve = resolve;
+            } else {
+              resolve(undefined);
+            }
+          });
+          if (active?.execId === execId) {
+            active.pendingStdinResolve = undefined;
+          }
+          store.clearPendingInput(execId);
+          if (value !== undefined) {
+            kernel.sendStdinReply(value);
+          }
+          // undefined means interrupted — skip reply, continue consuming outputs
           continue;
         }
         store.appendOutput(execId, output);

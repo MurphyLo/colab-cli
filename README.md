@@ -225,6 +225,50 @@ open the browser-based OAuth flow, and continue once authorization is complete.
 If automatic Drive mounting is configured (see below), `drive.mount()` will
 detect the pre-mounted filesystem and return immediately without any auth prompt.
 
+### Background Execution
+
+Run code in the background — the CLI returns immediately with an exec ID while the kernel continues executing:
+
+```bash
+colab exec --bg "import time; [print(i) or time.sleep(1) for i in range(60)]"
+# 1     ← exec ID printed to stdout
+```
+
+List all executions:
+
+```bash
+colab exec list
+```
+
+View buffered output without blocking:
+
+```bash
+colab exec attach 1 --no-wait
+colab exec attach 1 --tail 20        # last 20 outputs only (implies --no-wait)
+```
+
+Attach for live streaming (blocks until execution finishes, like foreground exec):
+
+```bash
+colab exec attach 1
+```
+
+Send stdin to a running execution:
+
+```bash
+colab exec send 1 --stdin "yes"
+```
+
+Interrupt a running execution:
+
+```bash
+colab exec send 1 --interrupt
+```
+
+Background execution is designed for AI tool use — an AI assistant can start a long-running job, do other work, and check back for output later. All executions (foreground and background) are tracked by the daemon and visible via `exec list`.
+
+Note: The Jupyter kernel is serial — only one execution runs at a time. Starting a new exec while another is running will be rejected.
+
 ## File Transfer
 
 Upload and download files between the local filesystem and the runtime's `/content` directory. Files are transferred via the Jupyter Contents API with automatic chunked transfer for large files.

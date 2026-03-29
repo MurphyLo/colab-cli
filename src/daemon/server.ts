@@ -15,6 +15,7 @@ import { getStoredServer } from '../runtime/storage.js';
 import { COLAB_API_DOMAIN, COLAB_GAPI_DOMAIN, CONFIG_DIR } from '../config.js';
 import type { ClientMessage, ServerMessage } from './protocol.js';
 import { encode } from './protocol.js';
+import { ExecutionStore } from './execution-store.js';
 
 const serverId = process.argv[2] as UUID;
 if (!serverId) {
@@ -40,8 +41,9 @@ function isSocketAlive(socketPath: string): Promise<boolean> {
   });
 }
 
-interface ExecContext {
-  socket: net.Socket;
+interface ActiveExecution {
+  execId: number;
+  attachedSocket?: net.Socket;
   pendingAuthRequests: Map<string, (error?: string) => void>;
   pendingStdinResolve?: (value: string | undefined) => void;
 }
@@ -99,25 +101,26 @@ async function main() {
   );
   refresher.start();
 
-  const execState: { activeExecContext?: ExecContext } = {};
+  const store = new ExecutionStore(serverId);
+  const execState: { activeExecution?: ActiveExecution } = {};
 
   const requestEphemeralAuth = async (authType: AuthType): Promise<void> => {
-    const execContext = execState.activeExecContext;
-    if (!execContext || execContext.socket.destroyed) {
+    const active = execState.activeExecution;
+    if (!active?.attachedSocket || active.attachedSocket.destroyed) {
       throw new Error(
-        'Foreground CLI session is unavailable to complete Google Drive authorization',
+        'No CLI session attached to complete Google Drive authorization',
       );
     }
 
     const requestId = randomUUID();
     const result = await new Promise<string | undefined>((resolve) => {
-      execContext.pendingAuthRequests.set(requestId, resolve);
-      if (execContext.socket.destroyed) {
-        execContext.pendingAuthRequests.delete(requestId);
-        resolve('Foreground CLI session closed before authorization completed');
+      active.pendingAuthRequests.set(requestId, resolve);
+      if (active.attachedSocket!.destroyed) {
+        active.pendingAuthRequests.delete(requestId);
+        resolve('CLI session closed before authorization completed');
         return;
       }
-      execContext.socket.write(
+      active.attachedSocket!.write(
         encode({ type: 'auth_required', requestId, authType }),
       );
     });
@@ -143,9 +146,77 @@ async function main() {
     console.log('Kernel connected');
   });
 
+  /** Run execution and route outputs to store + attached socket. */
+  async function runExecution(execId: number, code: string): Promise<void> {
+    try {
+      await kernelReady;
+      if (!kernel.isConnected) {
+        store.fail(execId, 'Kernel not connected');
+        const active = execState.activeExecution;
+        if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
+          active.attachedSocket.write(encode({ type: 'exec_error', message: 'Kernel not connected' }));
+        }
+        return;
+      }
+      const outputs = await kernel.execute(code);
+      for await (const output of outputs) {
+        const active = execState.activeExecution;
+        if (output.type === 'input_request') {
+          store.setPendingInput(execId, output.prompt, output.password);
+          if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
+            // Forward stdin request to attached client
+            active.attachedSocket.write(
+              encode({ type: 'input_request', prompt: output.prompt, password: output.password }),
+            );
+            const value = await new Promise<string | undefined>((resolve) => {
+              active.pendingStdinResolve = resolve;
+            });
+            active.pendingStdinResolve = undefined;
+            store.clearPendingInput(execId);
+            if (value !== undefined) {
+              kernel.sendStdinReply(value);
+            }
+            // undefined means interrupted — skip reply, continue consuming outputs
+          } else {
+            // No client attached — send empty string to unblock kernel
+            store.clearPendingInput(execId);
+            kernel.sendStdinReply('');
+            store.appendOutput(execId, {
+              type: 'stream',
+              name: 'stderr',
+              text: '[colab-cli] stdin requested but no client attached; sent empty input\n',
+            });
+            // Also forward the synthetic warning to attached client if one appeared in the meantime
+          }
+          continue;
+        }
+        store.appendOutput(execId, output);
+        if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
+          active.attachedSocket.write(encode({ type: 'output', output }));
+        }
+      }
+      store.complete(execId);
+      const active = execState.activeExecution;
+      if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
+        active.attachedSocket.write(encode({ type: 'exec_done' }));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      store.fail(execId, message);
+      const active = execState.activeExecution;
+      if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
+        active.attachedSocket.write(encode({ type: 'exec_error', message }));
+      }
+    } finally {
+      if (execState.activeExecution?.execId === execId) {
+        execState.activeExecution = undefined;
+      }
+    }
+  }
+
   // Start Unix socket server early so CLI detects daemon quickly
   const socketServer = net.createServer((socket) =>
-    handleClient(socket, kernel, kernelReady, execState),
+    handleClient(socket, kernel, kernelReady, execState, store, runExecution),
   );
 
   socketServer.on('error', (err: NodeJS.ErrnoException) => {
@@ -191,19 +262,16 @@ function handleClient(
   kernel: KernelConnection,
   kernelReady: Promise<void>,
   execState: {
-    activeExecContext?: ExecContext;
+    activeExecution?: ActiveExecution;
   },
+  store: ExecutionStore,
+  runExecution: (execId: number, code: string) => Promise<void>,
 ) {
   const send = (msg: ServerMessage) => {
     if (!socket.destroyed) socket.write(encode(msg));
   };
 
   send({ type: 'ready' });
-
-  const execContext: ExecContext = {
-    socket,
-    pendingAuthRequests: new Map(),
-  };
 
   const rl = readline.createInterface({ input: socket });
   rl.on('error', () => {});
@@ -217,77 +285,135 @@ function handleClient(
 
     switch (msg.type) {
       case 'exec': {
-        if (execState.activeExecContext && execState.activeExecContext !== execContext) {
+        if (execState.activeExecution) {
           send({
             type: 'exec_error',
-            message: 'Daemon is already executing code for another CLI session',
+            message: 'Daemon is already executing code for another session',
           });
           return;
         }
 
-        try {
-          execState.activeExecContext = execContext;
-          // Wait for kernel to be ready if still connecting at startup
-          await kernelReady;
-          if (!kernel.isConnected) {
-            send({
-              type: 'exec_error',
-              message: 'Kernel not connected',
-            });
-            return;
-          }
-          const outputs = await kernel.execute(msg.code);
-          for await (const output of outputs) {
-            if (output.type === 'input_request') {
-              send({ type: 'input_request', prompt: output.prompt, password: output.password });
-              const value = await new Promise<string | undefined>((resolve) => {
-                execContext.pendingStdinResolve = resolve;
-              });
-              execContext.pendingStdinResolve = undefined;
-              if (value !== undefined) {
-                kernel.sendStdinReply(value);
-              }
-              // undefined means kernel was interrupted — skip reply, continue consuming outputs
-              continue;
-            }
+        const execId = store.create(msg.code);
+
+        if (msg.background) {
+          // Background mode: return exec ID immediately, run without awaiting
+          execState.activeExecution = {
+            execId,
+            pendingAuthRequests: new Map(),
+          };
+          send({ type: 'exec_started', execId });
+          // Fire-and-forget — execution continues after client disconnects
+          runExecution(execId, msg.code).catch((err) => {
+            console.error('Background execution error:', err);
+          });
+        } else {
+          // Foreground mode: attach this socket and await completion
+          execState.activeExecution = {
+            execId,
+            attachedSocket: socket,
+            pendingAuthRequests: new Map(),
+          };
+          await runExecution(execId, msg.code);
+        }
+        break;
+      }
+
+      case 'exec_attach': {
+        const exec = store.get(msg.execId);
+        if (!exec) {
+          send({ type: 'exec_error', message: `Execution ${msg.execId} not found` });
+          return;
+        }
+
+        if (msg.noWait) {
+          // Snapshot mode: send batch of outputs and return
+          const outputs = store.getOutputs(msg.execId, msg.tail);
+          send({
+            type: 'exec_attach_batch',
+            execId: msg.execId,
+            outputs,
+            status: exec.status,
+            ...(exec.pendingInput ? { pendingInput: exec.pendingInput } : {}),
+          });
+        } else {
+          // Streaming mode: replay buffered outputs then attach for live
+          for (const output of exec.outputs) {
             send({ type: 'output', output });
           }
-          send({ type: 'exec_done' });
-        } catch (err) {
-          send({
-            type: 'exec_error',
-            message: err instanceof Error ? err.message : String(err),
-          });
-        } finally {
-          if (execState.activeExecContext === execContext) {
-            execState.activeExecContext = undefined;
+
+          if (exec.status === 'done') {
+            send({ type: 'exec_done' });
+            return;
+          }
+          if (exec.status === 'error') {
+            send({ type: 'exec_error', message: exec.errorMessage ?? 'Unknown error' });
+            return;
+          }
+
+          // Still running — attach this socket for live output
+          const active = execState.activeExecution;
+          if (active && active.execId === msg.execId) {
+            active.attachedSocket = socket;
+            // If there's a pending stdin request, forward it immediately
+            if (exec.pendingInput) {
+              send({
+                type: 'input_request',
+                prompt: exec.pendingInput.prompt,
+                password: exec.pendingInput.password,
+              });
+            }
           }
         }
         break;
       }
-      case 'auth_response': {
-        const resolve = execContext.pendingAuthRequests.get(msg.requestId);
-        if (!resolve) {
+
+      case 'exec_list': {
+        send({ type: 'exec_list_result', executions: store.list() });
+        break;
+      }
+
+      case 'exec_send': {
+        const active = execState.activeExecution;
+        if (!active || active.execId !== msg.execId) {
+          send({ type: 'exec_error', message: `Execution ${msg.execId} is not currently running` });
           return;
         }
-        execContext.pendingAuthRequests.delete(msg.requestId);
+        if (msg.interrupt) {
+          kernel.interrupt().catch(() => {});
+          if (active.pendingStdinResolve) {
+            active.pendingStdinResolve(undefined);
+            active.pendingStdinResolve = undefined;
+          }
+        } else if (msg.stdin !== undefined) {
+          if (active.pendingStdinResolve) {
+            active.pendingStdinResolve(msg.stdin);
+            active.pendingStdinResolve = undefined;
+          }
+        }
+        break;
+      }
+
+      case 'auth_response': {
+        const active = execState.activeExecution;
+        const resolve = active?.pendingAuthRequests.get(msg.requestId);
+        if (!resolve) return;
+        active!.pendingAuthRequests.delete(msg.requestId);
         resolve(msg.error);
         break;
       }
       case 'stdin_reply': {
-        const resolve = execContext.pendingStdinResolve;
-        if (resolve) {
-          execContext.pendingStdinResolve = undefined;
-          resolve(msg.value);
+        const active = execState.activeExecution;
+        if (active?.pendingStdinResolve) {
+          active.pendingStdinResolve(msg.value);
+          active.pendingStdinResolve = undefined;
         }
         break;
       }
       case 'interrupt':
         kernel.interrupt().catch(() => {});
-        // Cancel pending stdin wait so the for-await loop unblocks
-        if (execContext.pendingStdinResolve) {
-          execContext.pendingStdinResolve(undefined);
-          execContext.pendingStdinResolve = undefined;
+        if (execState.activeExecution?.pendingStdinResolve) {
+          execState.activeExecution.pendingStdinResolve(undefined);
+          execState.activeExecution.pendingStdinResolve = undefined;
         }
         break;
       case 'restart':
@@ -309,16 +435,18 @@ function handleClient(
 
   socket.on('error', () => {});
   socket.on('close', () => {
-    for (const resolve of execContext.pendingAuthRequests.values()) {
-      resolve('Foreground CLI session closed before authorization completed');
-    }
-    execContext.pendingAuthRequests.clear();
-    if (execContext.pendingStdinResolve) {
-      execContext.pendingStdinResolve('');
-      execContext.pendingStdinResolve = undefined;
-    }
-    if (execState.activeExecContext === execContext) {
-      execState.activeExecContext = undefined;
+    const active = execState.activeExecution;
+    if (active && active.attachedSocket === socket) {
+      // Detach socket but do NOT stop execution
+      for (const resolve of active.pendingAuthRequests.values()) {
+        resolve('CLI session closed before authorization completed');
+      }
+      active.pendingAuthRequests.clear();
+      if (active.pendingStdinResolve) {
+        active.pendingStdinResolve(undefined);
+        active.pendingStdinResolve = undefined;
+      }
+      active.attachedSocket = undefined;
     }
     rl.close();
   });

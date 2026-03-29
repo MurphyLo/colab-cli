@@ -2,7 +2,7 @@
 name: colab-cli
 description: "Use this skill whenever the user wants to operate Google Colab from the terminal: authenticate, inspect available runtimes, create or destroy a runtime, restart a kernel, check CCU usage, execute Python remotely, upload or download files to a Colab runtime, manage files in Google Drive through `colab drive`, or mount Drive on a runtime via `colab drive-mount`. Prefer this skill even if the user does not mention `colab-cli` explicitly but asks to use a Colab GPU or TPU, run code on Colab from a shell, move files to `/content`, move large files through Drive, mount Drive automatically, or troubleshoot Colab auth, Drive auth, quota, proxy, or runtime lifecycle issues."
 metadata:
-  short-description: Use the `colab` CLI for Colab auth, runtime, exec (with stdin/interrupt), fs, usage, Drive, and Drive mount tasks
+  short-description: Use the `colab` CLI for Colab auth, runtime, exec (with stdin/interrupt/background), fs, usage, Drive, and Drive mount tasks
 ---
 
 # Colab CLI
@@ -115,6 +115,27 @@ colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.s
 - **Ctrl+C interrupt**: Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel (equivalent to the stop button in the Colab UI). The kernel raises `KeyboardInterrupt`, the traceback is printed, and the CLI exits with a non-zero status. A second Ctrl+C force-exits the CLI immediately. This also works during `input()` prompts — Ctrl+C interrupts the kernel instead of sending input.
 - If the executed Python code raises an exception, `colab exec` exits non-zero.
 - If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
+- **Background execution** (`--bg`): The CLI returns immediately with an exec ID (printed to stdout) while the kernel continues executing. Use `exec attach`, `exec list`, and `exec send` to monitor and interact with background executions. Only one execution (foreground or background) can run at a time — the Jupyter kernel is serial.
+
+### Background Execution Management
+
+```bash
+colab exec --bg "import time; [print(i) or time.sleep(1) for i in range(60)]"
+colab exec list
+colab exec attach 1 --no-wait
+colab exec attach 1 --tail 20
+colab exec attach 1
+colab exec send 1 --stdin "yes"
+colab exec send 1 --interrupt
+```
+
+- Use `--bg` to run long tasks without blocking the CLI (exec ID printed to stdout).
+- Use `exec list` to see all executions and their status (running/done/error).
+- Use `exec attach <id> --no-wait` to get a snapshot of buffered output and exit immediately. Add `--tail <n>` to limit to the last N outputs.
+- Use `exec attach <id>` (without `--no-wait`) to replay buffered output and continue streaming live output until the execution finishes.
+- Use `exec send <id> --stdin "value"` to respond to a pending `input()` prompt in a background execution.
+- Use `exec send <id> --interrupt` to interrupt (Ctrl+C equivalent) a background execution.
+- If `input()` is called during background execution with no client attached, an empty string is sent automatically.
 
 ### Runtime Filesystem Transfer
 
@@ -176,6 +197,7 @@ colab drive-mount status                 # Check authorization status
 - Drive auth state is stored at `~/.config/colab-cli/drive-auth.json`.
 - Resumable Drive upload state is stored under `~/.config/colab-cli/drive-uploads/`.
 - Image outputs from `exec` are saved under `~/.config/colab-cli/outputs/` (timestamped subdirectories).
+- Execution history (background and foreground) is stored under `~/.config/colab-cli/exec-logs-<server-id>/`.
 - If a Drive command fails because the input looks like a filename instead of an ID, run `colab drive list` first and use the actual file or folder ID.
 - If `input()` prompts are not appearing or return empty, check that stdin is a TTY. In non-TTY mode (piped input, CI), prompts are skipped and empty strings are returned.
 - If Ctrl+C does not interrupt a long-running kernel execution, press Ctrl+C a second time to force-exit the CLI process.

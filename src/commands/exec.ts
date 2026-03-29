@@ -105,6 +105,204 @@ export async function execCommand(
   }
 }
 
+export async function execBgCommand(
+  runtimeManager: RuntimeManager,
+  options: {
+    code?: string;
+    file?: string;
+    endpoint?: string;
+  },
+): Promise<void> {
+  let code: string;
+  if (options.file) {
+    code = fs.readFileSync(options.file, 'utf-8');
+  } else if (options.code) {
+    code = options.code;
+  } else {
+    console.error('Provide code as argument or use -f <file>');
+    process.exit(1);
+  }
+
+  const server = options.endpoint
+    ? runtimeManager.getServerByEndpoint(options.endpoint)
+    : runtimeManager.getLatestServer();
+  if (!server) {
+    console.error('No runtime found. Create one first with `colab runtime create`.');
+    process.exit(1);
+  }
+
+  const spinner = createSpinner('Connecting to daemon...').start();
+  const client = new DaemonClient();
+  try {
+    await client.connect(server.id);
+    spinner.stop();
+  } catch (err) {
+    spinner.fail('Failed to connect to daemon');
+    throw err;
+  }
+
+  try {
+    const execId = await client.execBackground(code);
+    // Print just the exec ID to stdout for scripting
+    console.log(execId);
+  } finally {
+    client.close();
+  }
+}
+
+export async function execAttachCommand(
+  runtimeManager: RuntimeManager,
+  colabClient: ColabClient,
+  execId: number,
+  options: {
+    endpoint?: string;
+    noWait?: boolean;
+    tail?: number;
+  },
+): Promise<void> {
+  const server = options.endpoint
+    ? runtimeManager.getServerByEndpoint(options.endpoint)
+    : runtimeManager.getLatestServer();
+  if (!server) {
+    console.error('No runtime found. Create one first with `colab runtime create`.');
+    process.exit(1);
+  }
+
+  const client = new DaemonClient();
+  await client.connect(server.id);
+
+  // --tail implies --no-wait
+  const noWait = options.noWait || options.tail !== undefined;
+
+  if (noWait) {
+    try {
+      const result = await client.execAttachSnapshot(execId, options.tail);
+      for (const output of result.outputs) {
+        renderOutput(output);
+      }
+      if (result.pendingInput) {
+        console.error(`[waiting for input: "${result.pendingInput.prompt}"]`);
+      }
+      console.error(`[status: ${result.status}]`);
+      if (result.outputs.some((o) => o.type === 'error')) {
+        process.exitCode = 1;
+      }
+    } finally {
+      client.close();
+    }
+    return;
+  }
+
+  // Streaming attach — same UX as foreground exec
+  const origSigint = process.rawListeners('SIGINT').slice();
+  process.removeAllListeners('SIGINT');
+  let interrupted = false;
+  const doInterrupt = () => {
+    if (interrupted) process.exit(1);
+    interrupted = true;
+    client.interrupt();
+  };
+  process.on('SIGINT', doInterrupt);
+
+  let hasError = false;
+  try {
+    const outputs = client.execAttach(execId, {
+      handleEphemeralAuth: async (authType) => {
+        await handleEphemeralAuth(colabClient, server.endpoint, authType, server.label);
+      },
+      handleStdinRequest: async (prompt, password) => {
+        if (!process.stdin.isTTY) return '';
+        if (password) {
+          return readPassword(prompt, process.stdout, doInterrupt);
+        }
+        return readLine(prompt, process.stdout, doInterrupt);
+      },
+    });
+    hasError = await renderStream(outputs);
+  } finally {
+    process.removeAllListeners('SIGINT');
+    for (const fn of origSigint) {
+      process.on('SIGINT', fn as (...args: any[]) => void);
+    }
+    client.close();
+  }
+
+  if (hasError) {
+    process.exitCode = 1;
+  }
+}
+
+export async function execListCommand(
+  runtimeManager: RuntimeManager,
+  options: { endpoint?: string },
+): Promise<void> {
+  const server = options.endpoint
+    ? runtimeManager.getServerByEndpoint(options.endpoint)
+    : runtimeManager.getLatestServer();
+  if (!server) {
+    console.error('No runtime found. Create one first with `colab runtime create`.');
+    process.exit(1);
+  }
+
+  const client = new DaemonClient();
+  await client.connect(server.id);
+
+  try {
+    const executions = await client.execList();
+    if (executions.length === 0) {
+      console.log('No executions.');
+      return;
+    }
+
+    // Print table
+    const header = 'ID\tSTATUS\tSTARTED\t\t\t\tOUTPUTS\tCODE';
+    console.log(header);
+    for (const e of executions) {
+      const started = new Date(e.startedAt).toLocaleString();
+      const codeSnippet = e.code.replace(/\n/g, '\\n');
+      const status = e.hasError ? `${e.status}*` : e.status;
+      console.log(`${e.execId}\t${status}\t${started}\t${e.outputCount}\t${codeSnippet}`);
+    }
+  } finally {
+    client.close();
+  }
+}
+
+export async function execSendCommand(
+  runtimeManager: RuntimeManager,
+  execId: number,
+  options: {
+    endpoint?: string;
+    stdin?: string;
+    interrupt?: boolean;
+  },
+): Promise<void> {
+  if (options.stdin === undefined && !options.interrupt) {
+    console.error('Provide --stdin <value> or --interrupt');
+    process.exit(1);
+  }
+
+  const server = options.endpoint
+    ? runtimeManager.getServerByEndpoint(options.endpoint)
+    : runtimeManager.getLatestServer();
+  if (!server) {
+    console.error('No runtime found. Create one first with `colab runtime create`.');
+    process.exit(1);
+  }
+
+  const client = new DaemonClient();
+  await client.connect(server.id);
+
+  try {
+    client.execSend(execId, {
+      stdin: options.stdin,
+      interrupt: options.interrupt,
+    });
+  } finally {
+    client.close();
+  }
+}
+
 function readLine(
   prompt: string,
   output: NodeJS.WritableStream,

@@ -32,7 +32,8 @@ colab-cli/
 │   │   ├── server.ts                # 守护进程入口（独立 Node 进程）
 │   │   ├── client.ts                # DaemonClient：CLI 命令通过它与守护进程通信
 │   │   ├── lifecycle.ts             # 守护进程生命周期：start/stop/isDaemonRunning
-│   │   └── protocol.ts             # NDJSON IPC 消息类型定义
+│   │   ├── protocol.ts             # NDJSON IPC 消息类型定义
+│   │   └── execution-store.ts      # 执行历史管理（内存缓存 + NDJSON 持久化）
 │   │
 │   ├── colab/                       # Colab REST API 层
 │   │   ├── api.ts                   # Zod schema + 类型定义
@@ -187,6 +188,7 @@ runtime create
 | `daemon-<server-id>.sock` | Unix Socket，CLI 通过它与守护进程通信 |
 | `daemon-<server-id>.pid` | 守护进程 PID，用于检测运行状态和发送信号 |
 | `daemon-<server-id>.log` | 守护进程日志（stdout/stderr 重定向至此） |
+| `exec-logs-<server-id>/` | 执行历史日志目录（每次执行一个 NDJSON 文件） |
 
 ### 3.4 IPC 协议
 
@@ -196,11 +198,17 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 
 ```jsonl
 {"type": "exec", "code": "print('hello')"}
+{"type": "exec", "code": "long_task()", "background": true}
 {"type": "auth_response", "requestId": "<uuid>", "error": "optional error"}
 {"type": "stdin_reply", "value": "user input text"}
 {"type": "interrupt"}
 {"type": "restart"}
 {"type": "ping"}
+{"type": "exec_attach", "execId": 1}
+{"type": "exec_attach", "execId": 1, "noWait": true, "tail": 20}
+{"type": "exec_list"}
+{"type": "exec_send", "execId": 1, "stdin": "yes"}
+{"type": "exec_send", "execId": 1, "interrupt": true}
 ```
 
 **Server → Client**：
@@ -212,12 +220,15 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 {"type": "output", "output": {"type": "stream", "name": "stdout", "text": "hello\n"}}
 {"type": "exec_done"}
 {"type": "exec_error", "message": "..."}
+{"type": "exec_started", "execId": 1}
+{"type": "exec_attach_batch", "execId": 1, "outputs": [...], "status": "running"}
+{"type": "exec_list_result", "executions": [...]}
 {"type": "restarted"}
 {"type": "restart_error", "message": "..."}
 {"type": "pong"}
 ```
 
-**通信流程**：
+**通信流程（前台执行）**：
 
 1. CLI 连接 Unix Socket
 2. 守护进程发送 `ready`
@@ -230,7 +241,35 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 9. 守护进程发送 `exec_done` 或 `exec_error`
 10. CLI 断开（守护进程继续运行）
 
-### 3.5 生命周期管理
+**通信流程（后台执行）**：
+
+1. CLI 发送 `exec` 请求（带 `background: true`）
+2. 守护进程发送 `exec_started`（含 execId），CLI 立即退出
+3. 执行继续在守护进程中进行，输出缓存在 ExecutionStore
+4. 后续 CLI 可通过 `exec_attach`（流式重放 + 续流）或 `exec_attach`（`noWait: true`，快照模式）获取输出
+5. `exec_send` 可发送 stdin 或 interrupt 信号到运行中的执行
+6. 如果执行期间需要 `input()` 但无 CLI attach，自动发送空字符串
+
+### 3.5 ExecutionStore（执行历史管理）
+
+`src/daemon/execution-store.ts` 在守护进程内持久化所有执行的输出，支持后台执行和输出回放。
+
+**存储结构**：
+- 内存：`Map<number, Execution>`，每个 Execution 包含输出数组（上限 10,000 条）
+- 磁盘：`~/.config/colab-cli/exec-logs-<server-id>/<execId>.ndjson`，每行一个 JSON 事件
+
+**NDJSON 日志格式**：
+```jsonl
+{"event":"start","code":"print('hello')","startedAt":"2026-03-29T..."}
+{"event":"output","output":{"type":"stream","name":"stdout","text":"hello\n"}}
+{"event":"done"}
+```
+
+**恢复机制**：守护进程重启时，扫描日志目录恢复执行历史。缺少终止事件（`done`/`error`）的执行被标记为错误（"Daemon restarted during execution"）。
+
+**GC 策略**：保留最近 50 次执行，超出后删除最早的已完成执行（含日志文件）。
+
+### 3.6 生命周期管理
 
 | 事件 | 行为 |
 |---|---|
@@ -241,7 +280,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 | 守护进程 WebSocket 断开 | 健康检查（30s 间隔）发现 `!isConnected && !isRestarting` 后自动退出，下次 exec 会重启 |
 | 系统重启 | PID 文件残留，`isDaemonRunning()` 通过 `kill(pid, 0)` 检测到进程不存在，清理残留文件 |
 
-### 3.6 KernelConnection 的动态 URL
+### 3.7 KernelConnection 的动态 URL
 
 `KernelConnection` 的构造函数接受 `getProxyUrl: () => string`（getter 函数而非静态字符串）。这使得守护进程中的 `ConnectionRefresher` 刷新代理令牌和 URL 后，`KernelConnection` 的后续操作（如 `restartKernel()` 时的 WebSocket 重连）能自动使用最新值。
 

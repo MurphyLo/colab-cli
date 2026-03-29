@@ -17,7 +17,13 @@ import {
   destroyRuntimeCommand,
   restartRuntimeCommand,
 } from './commands/runtime.js';
-import { execCommand } from './commands/exec.js';
+import {
+  execCommand,
+  execBgCommand,
+  execAttachCommand,
+  execListCommand,
+  execSendCommand,
+} from './commands/exec.js';
 import { fsUploadCommand, fsDownloadCommand } from './commands/fs.js';
 import { usageCommand } from './commands/usage.js';
 import {
@@ -208,21 +214,71 @@ program
   });
 
 // Exec command
-program
+const execCmd = program
   .command('exec [code]')
   .description('execute code on a runtime')
   .option('-f, --file <path>', 'execute code from a file')
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .option('-b, --batch', 'collect all output and print at once instead of streaming')
   .option('-o, --output-dir <path>', 'save image outputs (png, jpeg, gif, svg) to this directory')
+  .option('--bg', 'run in background and return exec ID immediately')
   .action(async (code, opts) => {
     await ensureLoggedIn();
-    await execCommand(runtimeManager, colabClient, {
-      code,
-      file: opts.file,
+    if (opts.bg) {
+      await execBgCommand(runtimeManager, {
+        code,
+        file: opts.file,
+        endpoint: opts.endpoint,
+      });
+    } else {
+      await execCommand(runtimeManager, colabClient, {
+        code,
+        file: opts.file,
+        endpoint: opts.endpoint,
+        batch: opts.batch,
+        outputDir: opts.outputDir,
+      });
+    }
+  });
+
+execCmd
+  .command('attach <id>')
+  .description('attach to an execution (replay + stream output)')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .option('--no-wait', 'print buffered output and exit immediately')
+  .option('--tail <n>', 'only last N outputs (implies --no-wait)', parseInt)
+  .action(async (id: string, opts) => {
+    await ensureLoggedIn();
+    await execAttachCommand(runtimeManager, colabClient, parseInt(id, 10), {
       endpoint: opts.endpoint,
-      batch: opts.batch,
-      outputDir: opts.outputDir,
+      noWait: !opts.wait,
+      tail: opts.tail,
+    });
+  });
+
+execCmd
+  .command('list')
+  .description('list executions with status')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .action(async (opts) => {
+    await ensureLoggedIn();
+    await execListCommand(runtimeManager, {
+      endpoint: opts.endpoint,
+    });
+  });
+
+execCmd
+  .command('send <id>')
+  .description('send stdin or interrupt to a running execution')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .option('--stdin <value>', 'send stdin input value')
+  .option('--interrupt', 'interrupt the execution')
+  .action(async (id: string, opts) => {
+    await ensureLoggedIn();
+    await execSendCommand(runtimeManager, parseInt(id, 10), {
+      endpoint: opts.endpoint,
+      stdin: opts.stdin,
+      interrupt: opts.interrupt,
     });
   });
 

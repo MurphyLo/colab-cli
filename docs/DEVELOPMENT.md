@@ -271,12 +271,15 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 
 **显示状态映射**：`exec list` 的 STATUS 列将存储层状态映射为用户可见的标签：
 
-| 存储状态 | hasError | 显示标签 | 含义 |
-|---------|----------|---------|------|
-| `running` | — | `running` | 执行中 |
-| `done` | false | `done` | 正常完成 |
-| `done` | true | `error` | 完成但有 Python 异常（如 KeyboardInterrupt、ValueError） |
+| 存储状态 | 条件 | 显示标签 | 含义 |
+|---------|------|---------|------|
+| `running` | 无 pendingInput | `running` | 执行中 |
+| `running` | 有 pendingInput | `input` | 等待 `input()` 响应 |
+| `done` | hasError=false | `done` | 正常完成 |
+| `done` | hasError=true | `error` | 完成但有 Python 异常（如 KeyboardInterrupt、ValueError） |
 | `error` | — | `crashed` | 守护进程级别故障（kernel 断连、daemon 重启等） |
+
+ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `finishedAt - startedAt`，格式为 `Xs`/`XmYs`/`XhYm`。`finishedAt` 持久化在 NDJSON 日志的 `done`/`error` 事件中，daemon 重启后仍能准确还原。
 
 ### 3.6 生命周期管理
 

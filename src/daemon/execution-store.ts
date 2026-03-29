@@ -3,9 +3,9 @@ import path from 'path';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import { CONFIG_DIR } from '../config.js';
 
-export type ExecStatus = 'running' | 'done' | 'error';
+export type ExecStatus = 'running' | 'input' | 'done' | 'error' | 'crashed';
 
-export interface Execution {
+interface Execution {
   id: number;
   code: string;
   status: ExecStatus;
@@ -13,7 +13,7 @@ export interface Execution {
   finishedAt?: Date;
   outputs: KernelOutput[];
   outputCount: number; // total count (may exceed in-memory buffer)
-  hasError: boolean;
+  hasErrorOutput: boolean; // internal: tracks if any error output was seen
   errorMessage?: string;
   pendingInput?: { prompt: string; password: boolean };
 }
@@ -25,14 +25,14 @@ export interface ExecListEntry {
   startedAt: string;
   finishedAt?: string;
   outputCount: number;
-  hasError: boolean;
 }
 
 type LogEvent =
   | { event: 'start'; code: string; startedAt: string }
   | { event: 'output'; output: KernelOutput }
-  | { event: 'done' }
-  | { event: 'error'; message: string };
+  | { event: 'done'; finishedAt: string }
+  | { event: 'error'; finishedAt: string }
+  | { event: 'crashed'; message: string; finishedAt: string };
 
 const MAX_OUTPUTS_IN_MEMORY = 10_000;
 const MAX_RETAINED_EXECS = 50;
@@ -70,7 +70,7 @@ export class ExecutionStore {
     let startedAt = new Date();
     let status: ExecStatus = 'running';
     let finishedAt: Date | undefined;
-    let hasError = false;
+    let hasErrorOutput = false;
     let errorMessage: string | undefined;
     const outputs: KernelOutput[] = [];
     let outputCount = 0;
@@ -92,29 +92,30 @@ export class ExecutionStore {
           if (outputs.length < MAX_OUTPUTS_IN_MEMORY) {
             outputs.push(event.output);
           }
-          if (event.output.type === 'error') hasError = true;
+          if (event.output.type === 'error') hasErrorOutput = true;
           break;
         case 'done':
           status = 'done';
-          finishedAt = new Date();
+          finishedAt = new Date(event.finishedAt);
           break;
         case 'error':
           status = 'error';
-          hasError = true;
+          finishedAt = new Date(event.finishedAt);
+          break;
+        case 'crashed':
+          status = 'crashed';
           errorMessage = event.message;
-          finishedAt = new Date();
+          finishedAt = new Date(event.finishedAt);
           break;
       }
     }
 
     // Incomplete execution = daemon crashed during run
     if (status === 'running') {
-      status = 'error';
-      hasError = true;
+      status = 'crashed';
       errorMessage = 'Daemon restarted during execution';
       finishedAt = new Date();
-      // Write terminal event to file
-      this.appendToFile(id, { event: 'error', message: errorMessage });
+      this.appendToFile(id, { event: 'crashed', message: errorMessage, finishedAt: finishedAt.toISOString() });
     }
 
     this.executions.set(id, {
@@ -125,7 +126,7 @@ export class ExecutionStore {
       finishedAt,
       outputs,
       outputCount,
-      hasError,
+      hasErrorOutput,
       errorMessage,
     });
   }
@@ -141,7 +142,7 @@ export class ExecutionStore {
       startedAt,
       outputs: [],
       outputCount: 0,
-      hasError: false,
+      hasErrorOutput: false,
     };
     this.executions.set(id, exec);
     this.appendToFile(id, {
@@ -161,7 +162,7 @@ export class ExecutionStore {
     if (exec.outputs.length < MAX_OUTPUTS_IN_MEMORY) {
       exec.outputs.push(output);
     }
-    if (output.type === 'error') exec.hasError = true;
+    if (output.type === 'error') exec.hasErrorOutput = true;
     this.appendToFile(execId, { event: 'output', output });
   }
 
@@ -169,20 +170,22 @@ export class ExecutionStore {
   complete(execId: number): void {
     const exec = this.executions.get(execId);
     if (!exec) return;
-    exec.status = 'done';
+    exec.status = exec.hasErrorOutput ? 'error' : 'done';
     exec.finishedAt = new Date();
-    this.appendToFile(execId, { event: 'done' });
+    this.appendToFile(execId, {
+      event: exec.hasErrorOutput ? 'error' : 'done',
+      finishedAt: exec.finishedAt.toISOString(),
+    } as LogEvent);
   }
 
-  /** Mark execution as failed. */
+  /** Mark execution as crashed (daemon-level failure). */
   fail(execId: number, message: string): void {
     const exec = this.executions.get(execId);
     if (!exec) return;
-    exec.status = 'error';
-    exec.hasError = true;
+    exec.status = 'crashed';
     exec.errorMessage = message;
     exec.finishedAt = new Date();
-    this.appendToFile(execId, { event: 'error', message });
+    this.appendToFile(execId, { event: 'crashed', message, finishedAt: exec.finishedAt.toISOString() });
   }
 
   /** Get outputs, optionally only the last N. */
@@ -211,18 +214,21 @@ export class ExecutionStore {
         startedAt: e.startedAt.toISOString(),
         finishedAt: e.finishedAt?.toISOString(),
         outputCount: e.outputCount,
-        hasError: e.hasError,
       }));
   }
 
   setPendingInput(execId: number, prompt: string, password: boolean): void {
     const exec = this.executions.get(execId);
-    if (exec) exec.pendingInput = { prompt, password };
+    if (!exec) return;
+    exec.pendingInput = { prompt, password };
+    exec.status = 'input';
   }
 
   clearPendingInput(execId: number): void {
     const exec = this.executions.get(execId);
-    if (exec) exec.pendingInput = undefined;
+    if (!exec) return;
+    exec.pendingInput = undefined;
+    exec.status = 'running';
   }
 
   /** Remove oldest completed executions beyond limit. */

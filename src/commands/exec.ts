@@ -8,6 +8,15 @@ import { RuntimeManager } from '../runtime/runtime-manager.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import { createSpinner, isJsonMode, setJsonMode } from '../output/json-output.js';
 
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60}m`;
+}
+
 export async function execCommand(
   runtimeManager: RuntimeManager,
   colabClient: ColabClient,
@@ -255,15 +264,14 @@ export async function execListCommand(
     }
 
     // Print table
-    const header = 'ID\tSTATUS\tSTARTED\t\t\t\tOUTPUTS\tCODE';
+    const header = 'ID\tSTATUS\tELAPSED\tSTARTED\t\t\t\tOUTPUTS\tCODE';
     console.log(header);
     for (const e of executions) {
       const started = new Date(e.startedAt).toLocaleString();
       const codeSnippet = e.code.replace(/\n/g, '\\n');
-      const status = e.status === 'error' ? 'crashed'
-        : e.hasError ? 'error'
-        : e.status;
-      console.log(`${e.execId}\t${status}\t${started}\t${e.outputCount}\t${codeSnippet}`);
+      const endMs = e.finishedAt ? new Date(e.finishedAt).getTime() : Date.now();
+      const elapsed = formatElapsed(endMs - new Date(e.startedAt).getTime());
+      console.log(`${e.execId}\t${e.status}\t${elapsed}\t${started}\t${e.outputCount}\t${codeSnippet}`);
     }
   } finally {
     client.close();

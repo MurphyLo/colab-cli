@@ -277,7 +277,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 | `running` | 有 pendingInput | `input` | 等待 `input()` 响应 |
 | `done` | hasError=false | `done` | 正常完成 |
 | `done` | hasError=true | `error` | 完成但有 Python 异常（如 KeyboardInterrupt、ValueError） |
-| `error` | — | `crashed` | 守护进程级别故障（kernel 断连、daemon 重启等） |
+| `error` | — | `crashed` | kernel 进程崩溃（segfault、`os._exit`）、WebSocket 断连、daemon 重启等 |
 
 ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `finishedAt - startedAt`，格式为 `Xs`/`XmYs`/`XhYm`。`finishedAt` 持久化在 NDJSON 日志的 `done`/`error` 事件中，daemon 重启后仍能准确还原。
 
@@ -290,6 +290,7 @@ ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `f
 | `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel。重启期间 `KernelConnection.isRestarting` 为 `true`，健康检查会跳过 |
 | `runtime destroy` | `RuntimeManager.destroy()` 调用 `stopDaemon(serverId)` (SIGTERM)，然后 unassign |
 | 守护进程 WebSocket 断开 | 健康检查（30s 间隔）发现 `!isConnected && !isRestarting` 后自动退出，下次 exec 会重启 |
+| kernel 崩溃（segfault、`os._exit`） | Colab 自动重启 kernel → 新 kernel 发送 `status: starting` → `KernelConnection.handleMessage()` 检测到后 abort 活跃的 `executeAndStream` generator → `runExecution()` catch 调用 `store.fail()` → `crashed` 状态。参见 §4.7 |
 | 系统重启 | PID 文件残留，`isDaemonRunning()` 通过 `kill(pid, 0)` 检测到进程不存在，清理残留文件 |
 
 ### 3.7 KernelConnection 的动态 URL
@@ -517,7 +518,42 @@ CLI: runtime restart
 
 重启只杀 Python 进程，不销毁 VM。用于 `%pip install` 后重载模块。
 
-### 4.6 图片输出保存
+### 4.7 Kernel 崩溃检测
+
+当 kernel 进程崩溃（segfault、`os._exit`、OOM kill 等），Colab 代理自动重启 kernel，但 WebSocket 连接保持打开（连接的是 Colab 代理，不是 kernel 进程本身）。这导致 `executeAndStream()` 永远等待不会到来的 `execute_reply` + `status:idle` 消息。
+
+**两层检测机制**：
+
+```
+Layer 1 — status:starting 检测（主要路径）:
+
+  Kernel 崩溃 → Colab 自动重启 kernel
+    → 新 kernel 在 iopub 广播 status: starting（无 parent_header.msg_id）
+      → handleMessage() 全局路径检测到 execution_state === 'starting'
+        → 调用 activeExecutionAbort(new Error('Kernel restarted during execution'))
+          → generator queue 收到 { error } → 抛出异常
+            → runExecution() catch: store.fail(execId, message) → crashed 状态
+              → finally: activeExecution = undefined → 允许新执行
+
+Layer 2 — WebSocket close（回退路径）:
+
+  WebSocket 连接断开（网络中断等）
+    → ws.on('close') 调用 activeExecutionAbort(new Error('WebSocket closed during execution'))
+      → 同上 generator abort 流程 → crashed 状态
+```
+
+**与显式重启的交互**：`restartKernel()` 先 `removeAllListeners()` 再 `close()` → 旧 close handler 不触发。但新 WS 的 `handleMessage()` 检测到 `status: starting` 后仍会 abort 活跃执行，这是正确行为。
+
+**`status: starting` 的安全性**：根据 Jupyter 协议，`execution_state: starting` 仅在 kernel 生命周期事件（首次启动、重启）时出现。正常执行只有 `busy` → `idle` 转换，不会误触发。
+
+**源码溯源**：
+
+| 逻辑 | 来源项目 | 原始位置 | 迁移说明 |
+|------|----------|----------|----------|
+| 连接断开时中止活跃执行 | jupyter-kernel-client | `wsclient.py` `_on_close()` → `connection_ready.clear()` + `execute_interactive()` 检查 `connection_ready.is_set()` | `activeExecutionAbort` 回调模式替代 Event flag，通过 generator queue 传播错误 |
+| kernel 状态监控 | vscode-jupyter | `kernelCrashMonitor.ts` 监控 `status: 'dead'` / `'autorestarting'` | 简化为检测 `status: starting`，因为 Colab 代理不透传 `dead`/`autorestarting` 状态 |
+
+### 4.8 图片输出保存
 
 当执行的代码产生图片输出（`plt.show()`、`IPython.display.Image()` 等）时，Jupyter kernel 通过 iopub 发送 `display_data` 或 `execute_result` 消息，其 `data` 字段包含多种 MIME 表示（如 `image/png` 的 base64 编码、`text/plain` 的文本回退）。
 
@@ -558,7 +594,7 @@ saveImages(data: Record<string, string>)
 
 **竞态防护**：步骤 1-4 期间 `isConnected` 为 `false`，但 `isRestarting` 为 `true`。守护进程健康检查条件为 `!isConnected && !isRestarting`，因此不会在重启窗口内误杀守护进程。
 
-### 4.6 文件传输流程
+### 4.9 文件传输流程
 
 文件传输通过 Jupyter Contents API（REST）实现，不走 WebSocket。上传和下载共享相同的策略选择和分块逻辑。
 

@@ -80,6 +80,8 @@ export class KernelConnection {
   private _lastProxyUrl?: string;
   private _restarting = false;
   private messageHandlers = new Map<string, (msg: JupyterMessage) => void>();
+  /** Abort callback for the currently running executeAndStream generator. */
+  private activeExecutionAbort?: (err: Error) => void;
 
   constructor(
     private readonly getProxyUrl: () => string,
@@ -272,6 +274,12 @@ export class KernelConnection {
 
       this.ws.on('close', () => {
         log.debug('WebSocket closed');
+        // Abort any active execution generator so runExecution() doesn't hang.
+        // Mirrors jupyter-kernel-client's _on_close → connection_ready.clear().
+        if (this.activeExecutionAbort) {
+          this.activeExecutionAbort(new Error('WebSocket closed during execution'));
+          this.activeExecutionAbort = undefined;
+        }
       });
     });
   }
@@ -303,6 +311,16 @@ export class KernelConnection {
 
     // Handle kernel_info_reply for waiting
     if (msg.header?.msg_type === 'status') {
+      // Detect kernel restart: a status:starting broadcast means the kernel
+      // process was replaced (crash auto-restart or explicit restart).  Any
+      // in-flight execution will never receive its execute_reply/idle pair,
+      // so abort the generator to unblock runExecution().
+      if (msg.content?.execution_state === 'starting' && this.activeExecutionAbort) {
+        log.debug('Kernel restarted while execution active — aborting execution');
+        this.activeExecutionAbort(new Error('Kernel restarted during execution'));
+        this.activeExecutionAbort = undefined;
+      }
+
       const handler = this.messageHandlers.get('__kernel_status__');
       if (handler) {
         handler(msg);
@@ -519,6 +537,10 @@ export class KernelConnection {
 
     this.messageHandlers.set(msgId, handler);
 
+    // Register abort callback so external events (WS close, kernel restart)
+    // can unblock this generator instead of hanging forever.
+    this.activeExecutionAbort = (err: Error) => push({ error: err });
+
     // Send the execute request
     this.ws.send(JSON.stringify(request));
 
@@ -544,6 +566,7 @@ export class KernelConnection {
       }
     } finally {
       this.messageHandlers.delete(msgId);
+      this.activeExecutionAbort = undefined;
     }
   }
 }

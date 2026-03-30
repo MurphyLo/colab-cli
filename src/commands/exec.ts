@@ -313,6 +313,34 @@ export async function execSendCommand(
   }
 }
 
+export async function execClearCommand(
+  runtimeManager: RuntimeManager,
+  execId: number | undefined,
+  options: { endpoint?: string },
+): Promise<void> {
+  const server = options.endpoint
+    ? runtimeManager.getServerByEndpoint(options.endpoint)
+    : runtimeManager.getLatestServer();
+  if (!server) {
+    console.error('No runtime found. Create one first with `colab runtime create`.');
+    process.exit(1);
+  }
+
+  const client = new DaemonClient();
+  await client.connect(server.id);
+
+  try {
+    const count = await client.execClear(execId);
+    if (execId !== undefined) {
+      console.log(count ? `Cleared execution ${execId}.` : `Execution ${execId} not found or still running.`);
+    } else {
+      console.log(`Cleared ${count} execution${count !== 1 ? 's' : ''}.`);
+    }
+  } finally {
+    client.close();
+  }
+}
+
 function readLine(
   prompt: string,
   output: NodeJS.WritableStream,

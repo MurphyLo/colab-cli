@@ -231,6 +231,20 @@ export class ExecutionStore {
     exec.status = 'running';
   }
 
+  /** Remove completed executions. If execId given, remove that one; otherwise remove all non-running. */
+  clear(execId?: number): number {
+    const ids = execId !== undefined ? [execId] : [...this.executions.keys()];
+    let cleared = 0;
+    for (const id of ids) {
+      const exec = this.executions.get(id);
+      if (exec && exec.status !== 'running' && exec.status !== 'input') {
+        this.removeExecution(id);
+        cleared++;
+      }
+    }
+    return cleared;
+  }
+
   /** Remove oldest completed executions beyond limit. */
   private gc(): void {
     if (this.executions.size <= MAX_RETAINED_EXECS) return;
@@ -239,13 +253,15 @@ export class ExecutionStore {
       .sort((a, b) => a.id - b.id);
     const toRemove = this.executions.size - MAX_RETAINED_EXECS;
     for (let i = 0; i < toRemove && i < completed.length; i++) {
-      const exec = completed[i];
-      this.executions.delete(exec.id);
-      const logFile = path.join(this.logDir, `${exec.id}.ndjson`);
-      try {
-        fs.unlinkSync(logFile);
-      } catch {}
+      this.removeExecution(completed[i].id);
     }
+  }
+
+  private removeExecution(id: number): void {
+    this.executions.delete(id);
+    try {
+      fs.unlinkSync(path.join(this.logDir, `${id}.ndjson`));
+    } catch {}
   }
 
   private appendToFile(execId: number, event: LogEvent): void {

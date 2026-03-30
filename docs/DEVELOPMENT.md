@@ -209,6 +209,8 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 {"type": "exec_list"}
 {"type": "exec_send", "execId": 1, "stdin": "yes"}
 {"type": "exec_send", "execId": 1, "interrupt": true}
+{"type": "exec_clear"}
+{"type": "exec_clear", "execId": 1}
 ```
 
 **Server → Client**：
@@ -223,6 +225,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 {"type": "exec_started", "execId": 1}
 {"type": "exec_attach_batch", "execId": 1, "outputs": [...], "status": "running"}
 {"type": "exec_list_result", "executions": [...]}
+{"type": "exec_clear_result", "count": 3}
 {"type": "restarted"}
 {"type": "restart_error", "message": "..."}
 {"type": "pong"}
@@ -249,6 +252,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 4. 后续 CLI 可通过 `exec_attach`（流式重放 + 续流）或 `exec_attach`（`noWait: true`，快照模式）获取输出
 5. `exec_send` 可发送 stdin 或 interrupt 信号到运行中的执行
 6. 如果执行期间需要 `input()` 但无 CLI attach，执行挂起等待直到通过 `exec_send` 发送 stdin 或有 CLI attach
+7. `exec_clear` 可清理已完成的执行历史（不影响 running/input 状态的执行）
 
 ### 3.5 ExecutionStore（执行历史管理）
 
@@ -267,7 +271,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 
 **恢复机制**：守护进程重启时，扫描日志目录恢复执行历史。缺少终止事件（`done`/`error`）的执行被标记为错误（"Daemon restarted during execution"）。
 
-**GC 策略**：保留最近 50 次执行，超出后删除最早的已完成执行（含日志文件）。
+**GC 策略**：保留最近 50 次执行，超出后删除最早的已完成执行（含日志文件）。另外 `exec clear` 命令支持手动清理：不带参数清理所有已完成执行，带 ID 清理指定执行。
 
 **显示状态映射**：`exec list` 的 STATUS 列将存储层状态映射为用户可见的标签：
 

@@ -23,6 +23,7 @@ import {
   execAttachCommand,
   execListCommand,
   execSendCommand,
+  execClearCommand,
 } from './commands/exec.js';
 import { fsUploadCommand, fsDownloadCommand } from './commands/fs.js';
 import { usageCommand } from './commands/usage.js';
@@ -279,6 +280,17 @@ execCmd
       endpoint: opts.endpoint,
       stdin: opts.stdin,
       interrupt: opts.interrupt,
+    });
+  });
+
+execCmd
+  .command('clear [id]')
+  .description('clear completed executions (all, or by ID)')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .action(async (id: string | undefined, opts) => {
+    await ensureLoggedIn();
+    await execClearCommand(runtimeManager, id ? parseInt(id, 10) : undefined, {
+      endpoint: opts.endpoint,
     });
   });
 

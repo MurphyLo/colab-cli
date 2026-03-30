@@ -125,6 +125,14 @@ export class DaemonClient {
     });
   }
 
+  async execClear(execId?: number): Promise<number> {
+    this.send({ type: 'exec_clear', ...(execId !== undefined ? { execId } : {}) });
+    const msg = await this.nextMessage();
+    if (msg.type === 'exec_clear_result') return msg.count;
+    if (msg.type === 'exec_error') throw new Error(msg.message);
+    throw new Error(`Unexpected response: ${msg.type}`);
+  }
+
   async restart(): Promise<void> {
     this.send({ type: 'restart' });
     const msg = await this.nextMessage();

@@ -1,8 +1,8 @@
 # colab-cli
 
-A terminal-first CLI for creating and using Google Colab runtimes outside the browser.
+A terminal-first CLI for Google Colab — create runtimes, execute Python on GPUs/TPUs, and manage files, all from the command line. Many implementation patterns are adapted from [`colab-vscode`](https://github.com/googlecolab/colab-vscode) and [`jupyter-kernel-client`](https://github.com/googlecolab/jupyter-kernel-client).
 
-This project is a migration of the Colab runtime logic from the `colab-vscode` codebase into a standalone command-line tool. It supports:
+This tool supports:
 
 - Google OAuth login
 - Listing available Colab runtime options
@@ -266,6 +266,15 @@ Interrupt a running execution:
 ```bash
 colab exec send 1 --interrupt
 ```
+
+Clear execution history:
+
+```bash
+colab exec clear              # clear all completed executions
+colab exec clear 3            # clear a specific execution by ID
+```
+
+Running or input-waiting executions are preserved; only completed (`done`, `error`, `crashed`) entries are removed.
 
 Background execution is designed for AI tool use — an AI assistant can start a long-running job, do other work, and check back for output later. All executions (foreground and background) are tracked by the daemon and visible via `exec list`.
 

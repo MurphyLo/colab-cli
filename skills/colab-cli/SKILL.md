@@ -127,14 +127,18 @@ colab exec attach 1 --tail 20
 colab exec attach 1
 colab exec send 1 --stdin "yes"
 colab exec send 1 --interrupt
+colab exec clear
+colab exec clear 1
 ```
 
 - Use `--bg` to run long tasks without blocking the CLI (exec ID printed to stdout).
 - Use `exec list` to see all executions and their status (running/done/error/crashed/input) and elapsed time.
-- Use `exec attach <id> --no-wait` to get a snapshot of buffered output and exit immediately. Add `--tail <n>` to limit to the last N outputs.
+- Use `exec attach <id> --no-wait` to get a snapshot of buffered output and exit immediately.
+- Use `exec attach <id> --tail <n>` to get only the last N outputs (implies `--no-wait`, so `--no-wait` can be omitted).
 - Use `exec attach <id>` (without `--no-wait`) to replay buffered output and continue streaming live output until the execution finishes.
 - Use `exec send <id> --stdin "value"` to respond to a pending `input()` prompt in a background execution.
 - Use `exec send <id> --interrupt` to interrupt (Ctrl+C equivalent) a background execution.
+- Use `exec clear` to remove all completed executions, or `exec clear <id>` to remove a specific one. Running and input-waiting executions are preserved.
 - If `input()` is called during background execution with no client attached, execution waits until stdin is delivered via `exec send <id> --stdin` or a client attaches.
 
 ### Runtime Filesystem Transfer

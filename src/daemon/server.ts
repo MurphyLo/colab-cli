@@ -390,6 +390,12 @@ function handleClient(
         break;
       }
 
+      case 'exec_clear': {
+        const count = store.clear(msg.execId);
+        send({ type: 'exec_clear_result', count });
+        break;
+      }
+
       case 'auth_response': {
         const active = execState.activeExecution;
         const resolve = active?.pendingAuthRequests.get(msg.requestId);

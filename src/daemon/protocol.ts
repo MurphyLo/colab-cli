@@ -11,7 +11,8 @@ export type ClientMessage =
   | { type: 'ping' }
   | { type: 'exec_attach'; execId: number; noWait?: boolean; tail?: number }
   | { type: 'exec_list' }
-  | { type: 'exec_send'; execId: number; stdin?: string; interrupt?: boolean };
+  | { type: 'exec_send'; execId: number; stdin?: string; interrupt?: boolean }
+  | { type: 'exec_clear'; execId?: number };
 
 export type ServerMessage =
   | { type: 'ready' }
@@ -31,7 +32,8 @@ export type ServerMessage =
       status: ExecStatus;
       pendingInput?: { prompt: string; password: boolean };
     }
-  | { type: 'exec_list_result'; executions: ExecListEntry[] };
+  | { type: 'exec_list_result'; executions: ExecListEntry[] }
+  | { type: 'exec_clear_result'; count: number };
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg) + '\n';

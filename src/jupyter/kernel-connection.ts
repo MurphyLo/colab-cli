@@ -22,11 +22,18 @@ export interface ExecuteResultOutput {
   type: 'execute_result';
   data: Record<string, string>;
   executionCount: number;
+  /**
+   * Absolute paths of image MIME types that the daemon eagerly persisted to disk.
+   * Keyed by MIME type. The original base64 in `data` is preserved as a backup.
+   */
+  savedPaths?: Record<string, string>;
 }
 
 export interface DisplayDataOutput {
   type: 'display_data';
   data: Record<string, string>;
+  /** See ExecuteResultOutput.savedPaths. */
+  savedPaths?: Record<string, string>;
 }
 
 export interface ErrorOutput {

@@ -424,7 +424,7 @@ Without `--use-env-proxy`, newer Node versions will detect the proxy environment
 
 Most commands support a global `--json` flag that keeps stdout machine-readable for shell scripts and automation pipelines (`exec` is excluded — it always uses interactive terminal output).
 
-Human-facing progress and consent prompts are routed to stderr. Commands that need a browser-based OAuth step may emit an `auth_required` JSON event before the final command result:
+Human-facing progress and consent prompts are routed to stderr. Login commands (`auth login`, `drive login`, `drive-mount login`) in `--json` mode are non-blocking: they emit an `auth_required` event with the OAuth URL and timeout, then exit immediately while a background daemon waits for the browser callback. Poll the corresponding `status --json` command to confirm login completion.
 
 ```bash
 # Interactive (human-readable spinner on stderr)
@@ -434,10 +434,9 @@ colab drive mkdir models -p "$PARENT_ID"
 colab drive mkdir models -p "$PARENT_ID" --json
 # => {"command":"drive.mkdir","name":"models","folderId":"1Abc...","parentId":"1Xyz..."}
 
-# OAuth-driven flow in JSON mode
+# OAuth login in JSON mode (returns immediately)
 colab auth login --json
-# => {"event":"auth_required","context":"Google sign-in","url":"https://accounts.google.com/..."}
-# => {"command":"auth.login","name":"Jane Doe","email":"jane@example.com"}
+# => {"event":"auth_required","authType":"colab","url":"https://accounts.google.com/...","timeoutSeconds":120}
 ```
 
 Example: building a nested Drive folder tree in a script:

@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs';
 import chalk from 'chalk';
 import { DriveAuthManager } from '../drive/auth.js';
+import { startBackgroundAuth } from '../auth/background-auth.js';
 import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
 import {
   listFiles,
@@ -31,13 +32,14 @@ export async function driveLoginCommand(
     return;
   }
 
+  if (isJsonMode()) {
+    await startBackgroundAuth('drive');
+    return;
+  }
+
   await driveAuth.ensureAuthorized();
   const email = driveAuth.getEmail();
-  if (isJsonMode()) {
-    jsonResult({ command: 'drive.login', email: email ?? null });
-  } else {
-    console.log(`Drive authorized${email ? ` as ${email}` : ''}.`);
-  }
+  console.log(`Drive authorized${email ? ` as ${email}` : ''}.`);
 }
 
 export async function driveLogoutCommand(

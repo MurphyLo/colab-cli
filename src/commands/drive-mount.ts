@@ -2,18 +2,25 @@ import { MountAuthManager } from '../drive/mount-auth.js';
 import { mountDrive } from '../drive/mount.js';
 import { DaemonClient } from '../daemon/client.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
+import { startBackgroundAuth } from '../auth/background-auth.js';
 import { createSpinner, isJsonMode, jsonError, jsonResult } from '../output/json-output.js';
 
 export async function driveMountLoginCommand(): Promise<void> {
   const mountAuth = new MountAuthManager();
+
+  if (isJsonMode()) {
+    if (mountAuth.isAuthorized()) {
+      jsonResult({ command: 'drive-mount.login', alreadyLoggedIn: true, email: mountAuth.getEmail() ?? null });
+    } else {
+      await startBackgroundAuth('drive-mount');
+    }
+    return;
+  }
+
   await mountAuth.ensureAuthorized();
   const email = mountAuth.getEmail();
-  if (isJsonMode()) {
-    jsonResult({ command: 'drive-mount.login', email: email ?? null });
-  } else {
-    console.log(`Drive mount authorized${email ? ` as ${email}` : ''}.`);
-    console.log('Future runtimes can now mount Drive automatically with `colab drive-mount`.');
-  }
+  console.log(`Drive mount authorized${email ? ` as ${email}` : ''}.`);
+  console.log('Future runtimes can now mount Drive automatically with `colab drive-mount`.');
 }
 
 export async function driveMountCommand(

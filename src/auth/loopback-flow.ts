@@ -4,7 +4,7 @@ import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 import open from 'open';
 import { LoopbackServer, LoopbackHandler } from './loopback-server.js';
 
-const EXCHANGE_TIMEOUT_MS = 120_000;
+export const EXCHANGE_TIMEOUT_MS = 120_000;
 
 interface FlowResult {
   code: string;

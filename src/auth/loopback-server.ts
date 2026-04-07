@@ -32,7 +32,7 @@ export class LoopbackServer {
     this.server.close();
   }
 
-  async start(): Promise<number> {
+  async start(port: number = 0): Promise<number> {
     if (this.isDisposed) {
       throw new Error('Local server has already been disposed');
     }
@@ -40,7 +40,7 @@ export class LoopbackServer {
       return this.listen;
     }
     this.listen = new Promise<number>((resolve, reject) => {
-      this.server.listen(0, '127.0.0.1', () => {
+      this.server.listen(port, '127.0.0.1', () => {
         const address = this.server.address();
         if (address && typeof address !== 'string') {
           resolve(address.port);

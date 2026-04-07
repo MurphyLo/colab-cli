@@ -54,6 +54,8 @@ ENDPOINT=$(colab runtime create --accelerator T4 --shape standard --json | jq -r
 
 Every JSON object includes a `command` field (e.g. `"drive.mkdir"`, `"runtime.create"`). Command-level failures return `{"error":"..."}` with a non-zero exit code.
 
+Login commands (`auth login`, `drive login`, `drive-mount login`) in `--json` mode are **non-blocking**: they output `{"event":"auth_required","authType":"...","url":"...","timeoutSeconds":120}` and exit immediately. A background daemon waits for the OAuth callback (up to the timeout). After the user completes login in the browser, poll the corresponding `status --json` command to confirm success.
+
 When building scripts that chain folder creation or runtime operations, always use `--json` to avoid parsing spinner output.
 
 ## Command Patterns

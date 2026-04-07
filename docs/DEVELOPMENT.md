@@ -42,6 +42,7 @@ colab-cli/
 │   │
 │   ├── auth/                        # OAuth2 认证
 │   │   ├── auth-manager.ts          # 令牌管理（刷新、存储、登录/登出）
+│   │   ├── background-auth.ts       # --json 模式后台 OAuth（spawn 守护进程等待回调，父进程立即退出）
 │   │   ├── loopback-flow.ts         # 本地回环服务器 OAuth 流程
 │   │   ├── loopback-server.ts       # HTTP server 封装
 │   │   ├── storage.ts               # 文件存储 (~/.config/colab-cli/auth.json)
@@ -319,6 +320,18 @@ auth-manager.ts: login()
       7. 用 code + code_verifier 换取 tokens
   → 用 access_token 请求 googleapis.com/oauth2/v2/userinfo
   → 存储 { id, refreshToken, account, scopes } 到 ~/.config/colab-cli/auth.json
+
+`--json` 模式后台流程（auth login / drive login / drive-mount login 共用）：
+  → background-auth.ts: startBackgroundAuth(authType)
+      1. 生成 PKCE、nonce，找到可用端口，构造 OAuth URL
+      2. spawn 自身模块为 detached 守护进程（接管 loopback 回调）
+      3. 向 stdout 输出 {"event":"auth_required","authType":"...","url":"...","timeoutSeconds":120}
+      4. 父进程退出（代理工具可立即读取 URL）
+  → 守护进程 runAuthCallbackDaemon()
+      1. 在同一端口启动 loopback server
+      2. 等待 OAuth 回调（≤120s）
+      3. 交换 code → tokens，保存凭证到对应文件
+      4. 退出
 ```
 
 **令牌刷新策略**：每次调用 `getAccessToken()` 时，检查 `expiry_date` 是否在 5 分钟内过期，是则 `oAuth2Client.refreshAccessToken()`。
@@ -838,7 +851,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [x] 图片输出：自动保存到 `~/.config/colab-cli/outputs/<timestamp>/`，`--output-dir` 可指定目录；终端流式和 batch 模式共用 `saveImages()`
 - [x] stdin 透传 + Ctrl+C 中断：拦截 `input_request` → readline/raw mode 获取用户输入 → `input_reply`；Ctrl+C → `interrupt` → kernel 中断 → 渲染 traceback
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
-- [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，非 exec 命令通过 `createSpinner()` + `jsonResult()` 支持；OAuth URL 通过 `auth_required` JSON event 暴露，人类可读提示走 stderr。`exec` 不支持 `--json`（打印警告并忽略），因为 exec 依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断
+- [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，非 exec 命令通过 `createSpinner()` + `jsonResult()` 支持；登录命令（auth login / drive login / drive-mount login）在 `--json` 模式下非阻塞：输出 `auth_required` 事件（含 URL 和超时）后立即退出，后台守护进程等待 OAuth 回调完成凭证存储。`exec` 不支持 `--json`（打印警告并忽略），因为 exec 依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断
 - [x] `colab drive-mount`：自动 Drive 挂载（伪 GCE metadata server + DriveFS，一次授权后免浏览器）
 - [x] `runtime versions`：查看可用 runtime 版本及环境详情（Python、PyTorch 等），`runtime create --version` 指定版本
 - [x] Ctrl+C 中断 kernel 执行：exec 期间 Ctrl+C → `client.interrupt()` → daemon → `POST /api/kernels/<id>/interrupt` → kernel 发回 KeyboardInterrupt traceback → CLI 渲染后正常退出；第二次 Ctrl+C force exit
@@ -972,7 +985,7 @@ npm run dev          # watch 模式编译
 
 ### 命令总览
 
-除 `exec` 外的所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象；若流程中需要浏览器 OAuth，则可能先输出一行 `{"event":"auth_required", ...}`。命令级失败通常输出 `{"error":"..."}` 并以非零状态退出。`exec` 忽略 `--json`（打印警告），因为它依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断。
+除 `exec` 外的所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象。登录命令（auth login / drive login / drive-mount login）在 `--json` 模式下非阻塞：输出 `{"event":"auth_required","authType":"...","url":"...","timeoutSeconds":120}` 后立即退出，后台守护进程等待 OAuth 回调；调用方可通过对应的 `status --json` 命令轮询确认登录完成。命令级失败通常输出 `{"error":"..."}` 并以非零状态退出。`exec` 忽略 `--json`（打印警告），因为它依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断。
 
 ```text
 auth login

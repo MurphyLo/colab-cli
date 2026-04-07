@@ -1,4 +1,5 @@
 import { AuthManager } from '../auth/auth-manager.js';
+import { startBackgroundAuth } from '../auth/background-auth.js';
 import { createSpinner, isJsonMode, jsonResult, notifyAuthUrl } from '../output/json-output.js';
 
 export async function loginCommand(authManager: AuthManager): Promise<void> {
@@ -12,6 +13,11 @@ export async function loginCommand(authManager: AuthManager): Promise<void> {
     return;
   }
 
+  if (isJsonMode()) {
+    await startBackgroundAuth('colab');
+    return;
+  }
+
   const spinner = createSpinner('Waiting for Google sign-in...').start();
   try {
     const user = await authManager.login((url) => {
@@ -19,11 +25,7 @@ export async function loginCommand(authManager: AuthManager): Promise<void> {
       notifyAuthUrl('Google sign-in', url);
       spinner.start('Waiting for authentication...');
     });
-    if (isJsonMode()) {
-      jsonResult({ command: 'auth.login', name: user.name, email: user.email });
-    } else {
-      spinner.succeed(`Signed in as ${user.name} (${user.email})`);
-    }
+    spinner.succeed(`Signed in as ${user.name} (${user.email})`);
   } catch (err) {
     spinner.fail('Sign-in failed');
     throw err;

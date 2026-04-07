@@ -187,9 +187,9 @@ async function main() {
           // undefined means interrupted — skip reply, continue consuming outputs
           continue;
         }
-        store.appendOutput(execId, output);
+        const stored = store.appendOutput(execId, output);
         if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
-          active.attachedSocket.write(encode({ type: 'output', output }));
+          active.attachedSocket.write(encode({ type: 'output', output: stored }));
         }
       }
       store.complete(execId);
@@ -290,7 +290,7 @@ function handleClient(
           return;
         }
 
-        const execId = store.create(msg.code);
+        const execId = store.create(msg.code, msg.outputDir);
 
         if (msg.background) {
           // Background mode: return exec ID immediately, run without awaiting

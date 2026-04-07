@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import { CONFIG_DIR } from '../config.js';
+import { saveOutputImages } from './image-saver.js';
 
 export type ExecStatus = 'running' | 'input' | 'done' | 'error' | 'crashed';
 
@@ -16,6 +17,10 @@ interface Execution {
   hasErrorOutput: boolean; // internal: tracks if any error output was seen
   errorMessage?: string;
   pendingInput?: { prompt: string; password: boolean };
+  /** Absolute directory where image outputs are persisted by image-saver. */
+  outputDir: string;
+  /** Monotonic counter for naming saved image files (exec<id>-output-<n>). */
+  imageCounter: number;
 }
 
 export interface ExecListEntry {
@@ -28,7 +33,7 @@ export interface ExecListEntry {
 }
 
 type LogEvent =
-  | { event: 'start'; code: string; startedAt: string }
+  | { event: 'start'; code: string; startedAt: string; outputDir: string }
   | { event: 'output'; output: KernelOutput }
   | { event: 'done'; finishedAt: string }
   | { event: 'error'; finishedAt: string }
@@ -41,9 +46,12 @@ export class ExecutionStore {
   private executions = new Map<number, Execution>();
   private nextId: number;
   private readonly logDir: string;
+  /** Default output dir when caller doesn't pass one to create(). */
+  private readonly defaultOutputDir: string;
 
   constructor(serverId: string) {
     this.logDir = path.join(CONFIG_DIR, `exec-logs-${serverId}`);
+    this.defaultOutputDir = path.join(CONFIG_DIR, 'outputs', serverId);
     fs.mkdirSync(this.logDir, { recursive: true });
     this.nextId = this.recoverNextId();
   }
@@ -74,6 +82,8 @@ export class ExecutionStore {
     let errorMessage: string | undefined;
     const outputs: KernelOutput[] = [];
     let outputCount = 0;
+    let outputDir = this.defaultOutputDir;
+    let imageCounter = 0;
 
     for (const line of lines) {
       let event: LogEvent;
@@ -86,6 +96,7 @@ export class ExecutionStore {
         case 'start':
           code = event.code;
           startedAt = new Date(event.startedAt);
+          if (event.outputDir) outputDir = event.outputDir;
           break;
         case 'output':
           outputCount++;
@@ -93,6 +104,13 @@ export class ExecutionStore {
             outputs.push(event.output);
           }
           if (event.output.type === 'error') hasErrorOutput = true;
+          if (
+            (event.output.type === 'display_data' ||
+              event.output.type === 'execute_result') &&
+            event.output.savedPaths
+          ) {
+            imageCounter += Object.keys(event.output.savedPaths).length;
+          }
           break;
         case 'done':
           status = 'done';
@@ -128,13 +146,22 @@ export class ExecutionStore {
       outputCount,
       hasErrorOutput,
       errorMessage,
+      outputDir,
+      imageCounter,
     });
   }
 
-  /** Create a new execution entry. Returns the exec ID. */
-  create(code: string): number {
+  /**
+   * Create a new execution entry. Returns the exec ID.
+   *
+   * `outputDir` is where image outputs from this execution will be eagerly
+   * saved by image-saver. Callers should pass an absolute path; if omitted,
+   * a per-server default under CONFIG_DIR/outputs/<serverId>/ is used.
+   */
+  create(code: string, outputDir?: string): number {
     const id = this.nextId++;
     const startedAt = new Date();
+    const resolvedOutputDir = outputDir ?? this.defaultOutputDir;
     const exec: Execution = {
       id,
       code,
@@ -143,27 +170,48 @@ export class ExecutionStore {
       outputs: [],
       outputCount: 0,
       hasErrorOutput: false,
+      outputDir: resolvedOutputDir,
+      imageCounter: 0,
     };
     this.executions.set(id, exec);
     this.appendToFile(id, {
       event: 'start',
       code,
       startedAt: startedAt.toISOString(),
+      outputDir: resolvedOutputDir,
     });
     this.gc();
     return id;
   }
 
-  /** Append an output to the execution. */
-  appendOutput(execId: number, output: KernelOutput): void {
+  /**
+   * Append an output to the execution.
+   *
+   * If the output carries image MIME data, image-saver eagerly persists it
+   * to `exec.outputDir` and the returned output gets a `savedPaths` field
+   * (the original base64 in `data` is preserved). The caller should forward
+   * the *returned* output to any attached client so the same savedPaths
+   * surface in both attach-time replay and live streaming.
+   */
+  appendOutput(execId: number, output: KernelOutput): KernelOutput {
     const exec = this.executions.get(execId);
-    if (!exec) return;
+    if (!exec) return output;
+
+    const { output: stored, nextCounter } = saveOutputImages(
+      output,
+      execId,
+      exec.outputDir,
+      exec.imageCounter,
+    );
+    exec.imageCounter = nextCounter;
+
     exec.outputCount++;
     if (exec.outputs.length < MAX_OUTPUTS_IN_MEMORY) {
-      exec.outputs.push(output);
+      exec.outputs.push(stored);
     }
-    if (output.type === 'error') exec.hasErrorOutput = true;
-    this.appendToFile(execId, { event: 'output', output });
+    if (stored.type === 'error') exec.hasErrorOutput = true;
+    this.appendToFile(execId, { event: 'output', output: stored });
+    return stored;
   }
 
   /** Mark execution as completed. */

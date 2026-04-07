@@ -3,7 +3,7 @@ import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import type { ExecStatus, ExecListEntry } from './execution-store.js';
 
 export type ClientMessage =
-  | { type: 'exec'; code: string; background?: boolean }
+  | { type: 'exec'; code: string; background?: boolean; outputDir?: string }
   | { type: 'auth_response'; requestId: string; error?: string }
   | { type: 'stdin_reply'; value: string }
   | { type: 'interrupt' }

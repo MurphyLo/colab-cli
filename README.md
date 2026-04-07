@@ -169,10 +169,10 @@ Save image outputs to a specific directory:
 
 ```bash
 colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.show()"
-# => [saved image/png → ./plots/output-1.png]
+# => [saved image/png → ./plots/exec1-output-1.png]
 ```
 
-If `--output-dir` is not specified, images are saved automatically to `~/.config/colab-cli/outputs/<timestamp>/` (a new timestamped subdirectory per execution, so successive runs never overwrite each other). Supported formats: PNG, JPEG, GIF, SVG.
+If `--output-dir` is not specified, images are saved automatically to `~/.config/colab-cli/outputs/<serverId>/`. File names follow the pattern `exec<id>-output-<n>.<ext>` for cross-execution isolation. Supported formats: PNG, JPEG, GIF, SVG.
 
 If multiple runtimes exist, target one explicitly:
 

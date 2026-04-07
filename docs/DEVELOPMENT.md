@@ -33,7 +33,8 @@ colab-cli/
 │   │   ├── client.ts                # DaemonClient：CLI 命令通过它与守护进程通信
 │   │   ├── lifecycle.ts             # 守护进程生命周期：start/stop/isDaemonRunning
 │   │   ├── protocol.ts             # NDJSON IPC 消息类型定义
-│   │   └── execution-store.ts      # 执行历史管理（内存缓存 + NDJSON 持久化）
+│   │   ├── execution-store.ts      # 执行历史管理（内存缓存 + NDJSON 持久化）
+│   │   └── image-saver.ts          # 图像输出持久化：将 display_data/execute_result 中的图像 MIME 写入磁盘
 │   │
 │   ├── colab/                       # Colab REST API 层
 │   │   ├── api.ts                   # Zod schema + 类型定义
@@ -83,7 +84,7 @@ colab-cli/
 │   │
 │   ├── output/
 │   │   ├── json-output.ts           # --json 模式：全局状态、SilentSpinner、jsonResult()
-│   │   └── terminal-renderer.ts     # 将 Jupyter IOPub 消息渲染到终端
+│   │   └── terminal-renderer.ts     # 将 Jupyter IOPub 消息渲染到终端（打印 savedPaths 路径）
 │   │
 │   ├── utils/
 │   │   ├── uuid.ts                  # UUID 校验 + web-safe base64 转换
@@ -265,12 +266,13 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 
 **NDJSON 日志格式**：
 ```jsonl
-{"event":"start","code":"print('hello')","startedAt":"2026-03-29T..."}
+{"event":"start","code":"print('hello')","startedAt":"2026-03-29T...","outputDir":"/Users/your-user/.config/colab-cli/outputs/<serverId>/"}
 {"event":"output","output":{"type":"stream","name":"stdout","text":"hello\n"}}
+{"event":"output","output":{"type":"display_data","data":{"image/png":"...base64..."},"savedPaths":{"image/png":"/path/to/exec1-output-1.png"}}}
 {"event":"done"}
 ```
 
-**恢复机制**：守护进程重启时，扫描日志目录恢复执行历史。缺少终止事件（`done`/`error`）的执行被标记为错误（"Daemon restarted during execution"）。
+**恢复机制**：守护进程重启时，扫描日志目录恢复执行历史。从 `start` 事件恢复 `outputDir`，从 `output` 事件中的 `savedPaths` 统计已保存图片数量以重建 `imageCounter`，确保后续执行的文件编号连续。缺少终止事件（`done`/`error`）的执行被标记为错误（"Daemon restarted during execution"）。
 
 **GC 策略**：保留最近 50 次执行，超出后删除最早的已完成执行（含日志文件）。另外 `exec clear` 命令支持手动清理：不带参数清理所有已完成执行，带 ID 清理指定执行。
 
@@ -397,7 +399,7 @@ exec.ts: execCommand()
 
 **SIGINT / Ctrl+C 中断**：exec.ts 在执行期间替换 process SIGINT handler。按 Ctrl+C 调用 `client.interrupt()` 发送 interrupt 消息到守护进程，守护进程通过 `POST /api/kernels/<id>/interrupt` 中断 kernel。kernel 发回 `KeyboardInterrupt` error + `status:idle`，CLI 渲染 traceback 后正常退出。第二次 Ctrl+C 强制 `process.exit(1)`。
 
-**图片输出处理**：`display_data` 和 `execute_result` 类型的 `KernelOutput` 可能包含图片 MIME 数据（如 `plt.show()` 产生的 `image/png`）。`saveImages()` 在终端流式和 batch 模式下统一处理：将图片写入文件，并**原地替换** `data[mime]` 为已保存的文件路径，同时打印 `[saved image/png → ...]` 提示。详见下方 §4.7。
+**图片输出处理**：`display_data` 和 `execute_result` 类型的 `KernelOutput` 可能包含图片 MIME 数据（如 `plt.show()` 产生的 `image/png`）。图片由守护进程的 `image-saver.ts` 模块立即持久化到磁盘，并在输出上附加 `savedPaths` 字段（MIME → 绝对路径映射）。CLI 端的 `terminal-renderer` 仅打印 `[saved image/png → ...]` 提示，不再执行 base64 解码或文件写入。详见下方 §4.8。
 
 **Jupyter 消息格式**（简化）：
 
@@ -574,31 +576,34 @@ Layer 2 — WebSocket close（回退路径）:
 
 当执行的代码产生图片输出（`plt.show()`、`IPython.display.Image()` 等）时，Jupyter kernel 通过 iopub 发送 `display_data` 或 `execute_result` 消息，其 `data` 字段包含多种 MIME 表示（如 `image/png` 的 base64 编码、`text/plain` 的文本回退）。
 
-**核心函数 `saveImages()`**（`output/terminal-renderer.ts`）是唯一的图片持久化入口，终端模式和 JSON 模式共用：
+**守护进程内立即持久化**：图片由 `daemon/image-saver.ts` 中的 `saveOutputImages()` 函数在 `execution-store.ts` 的 `appendOutput()` 流程中立即保存到磁盘。原始 base64 数据保留在 `data` 字段作为稳定备份（NDJSON 日志），同时在输出上附加 `savedPaths: Record<string, string>` 字段（MIME → 绝对路径映射）。
 
 ```
-saveImages(data: Record<string, string>)
-  for each (mime, content) in data:
+saveOutputImages(output, execId, outputDir, startCounter)
+  for each (mime, content) in output.data:
     1. 查找 imageExtensionForMimeType[mime] → ext（未命中则跳过）
-    2. 递增全局 outputCounter → 生成文件路径 output-<n>.<ext>
+    2. 递增 counter → 生成文件路径 exec<execId>-output-<n>.<ext>
     3. 写入文件：SVG 为 UTF-8 文本，其余 Buffer.from(base64)
-    4. 原地替换 data[mime] = filePath
+    4. 记录到 savedPaths[mime] = filePath
+  return { output: {...output, savedPaths}, nextCounter }
 ```
+
+**文件命名规则**：文件名为 `exec<execId>-output-<n>.<ext>`，跨执行隔离——即使多个执行共享同一 `outputDir`，文件名也不会冲突。
 
 **保存目录策略**：
 
 | 场景 | 目录 |
 |------|------|
-| 用户指定 `--output-dir ./plots` | `./plots/`（用户自行管理覆盖） |
-| 未指定（默认） | `~/.config/colab-cli/outputs/<ISO-timestamp>/`（每次 exec 隔离） |
+| 用户指定 `--output-dir ./plots` | `./plots/`（CLI 端解析为绝对路径后通过 IPC 传递给守护进程） |
+| 未指定（默认） | `~/.config/colab-cli/outputs/<serverId>/`（per-server 目录） |
 
-每次 `execCommand()` 入口调用 `setOutputDir()` 重置 counter 和目录。
+`exec.ts` 中的 `resolveOutputDir()` 负责将用户提供的相对路径解析为绝对路径（基于 CLI 的 CWD），并展开 `~` 前缀。这是必要的，因为守护进程是长驻后台进程，其 CWD 与用户终端几乎不会一致。
 
-**各模式的调用路径**：
+**CLI 端渲染**：`terminal-renderer.ts` 仅读取 `output.savedPaths` 并打印 `[saved <mime> → <path>]`，不再执行 base64 解码或文件写入。
 
-- **终端（流式/batch）**：`renderOutput()` → `saveImages()` + `printSavedPaths()`（打印 `[saved ...]` 到 stdout）
+**恢复机制**：守护进程重启时，`ExecutionStore` 从 NDJSON 日志重建 `imageCounter`，确保后续执行的文件编号连续。
 
-> **注意**：`exec` 不支持 `--json` 模式。如果调用方指定了 `--json`，exec 会打印警告并忽略该标志，回退到终端模式。这是因为 exec 依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断，与 JSON 的批量收集语义不兼容。
+**I/O 容错**：写入失败时记录日志但不中止执行，NDJSON 中的 base64 数据作为最终回退。
 
 **源码溯源**：
 
@@ -608,8 +613,6 @@ saveImages(data: Record<string, string>)
 | `data` 字段包含所有 MIME 类型（base64 图片 + text/plain 回退） | jupyter-kernel-client | `jupyter_kernel_client/client.py:24-105` (`output_hook()`)，`data: content.get("data")` 原样透传 |
 | SVG 为原始文本、二进制图片为 base64 | Jupyter wire protocol | [Jupyter messaging spec: display_data](https://jupyter-client.readthedocs.io/en/stable/messaging.html#display-data) |
 | `Buffer.from(base64)` 写入文件 | vscode-jupyter | `plotSaveHandler.ts:88` (`fs.writeFile(target, data.data)`)，colab-cli 使用 Node.js `Buffer` 等价实现 |
-
-**竞态防护**：步骤 1-4 期间 `isConnected` 为 `false`，但 `isRestarting` 为 `true`。守护进程健康检查条件为 `!isConnected && !isRestarting`，因此不会在重启窗口内误杀守护进程。
 
 ### 4.9 文件传输流程
 
@@ -848,7 +851,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [ ] `fs rm <path>`：删除 runtime 上的文件或目录。`DELETE /api/contents/<path>`，非空目录需先递归删除子项（参考 vscode 的 `deleteInternal()` 逻辑）或依赖服务端 `recursive` 参数支持。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`delete()` / `deleteInternal()`）
 - [ ] `fs mv <old-path> <new-path>`：重命名/移动 runtime 上的文件或目录。`PATCH /api/contents/<old-path>` body `{ path: "<new-path>" }`，不需要额外复制或删除。参考：`colab-vscode/src/jupyter/contents/file-system.ts`（`rename()`）、`colab-vscode/src/jupyter/client/generated/apis/ContentsApi.ts`（`contentsRename()`）
 - [x] `colab drive`：Google Drive 文件管理（list/upload/download/mkdir/delete/move）
-- [x] 图片输出：自动保存到 `~/.config/colab-cli/outputs/<timestamp>/`，`--output-dir` 可指定目录；终端流式和 batch 模式共用 `saveImages()`
+- [x] 图片输出：守护进程内由 `image-saver.ts` 立即持久化到 `~/.config/colab-cli/outputs/<serverId>/`，`--output-dir` 可指定目录（CLI 端解析为绝对路径后传递给守护进程）；CLI 端 `terminal-renderer` 仅打印 savedPaths 路径
 - [x] stdin 透传 + Ctrl+C 中断：拦截 `input_request` → readline/raw mode 获取用户输入 → `input_reply`；Ctrl+C → `interrupt` → kernel 中断 → 渲染 traceback
 - [ ] 守护进程内 WebSocket 自动重连（替代退出 + 自动重启）
 - [x] `--json` 输出模式（结构化输出）— 全局 `--json` flag，非 exec 命令通过 `createSpinner()` + `jsonResult()` 支持；登录命令（auth login / drive login / drive-mount login）在 `--json` 模式下非阻塞：输出 `auth_required` 事件（含 URL 和超时）后立即退出，后台守护进程等待 OAuth 回调完成凭证存储。`exec` 不支持 `--json`（打印警告并忽略），因为 exec 依赖交互式终端进行流式输出、stdin 透传和 Ctrl+C 中断
@@ -1048,9 +1051,10 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `runtime/runtime-manager.ts` | `jupyter/assignments.ts` | 大：简化，去掉事件系统，改为调度守护进程 |
 | `runtime/keep-alive.ts` | `colab/keep-alive.ts` | 大：简化为 setInterval |
 | `runtime/connection-refresher.ts` | `colab/connection-refresher.ts` | 大：简化为 setTimeout 链 |
-| `output/terminal-renderer.ts` | 无对应 | **全新**：终端输出渲染 |
+| `output/terminal-renderer.ts` | 无对应 | **全新**：终端输出渲染（仅打印 savedPaths） |
 | `output/json-output.ts` | 无对应 | **全新**：`--json` 模式全局状态、SilentSpinner、jsonResult/jsonError、`notifyAuthUrl()` |
 | `daemon/*` | 无对应 | **全新**：守护进程架构，IPC 通信 |
+| `daemon/image-saver.ts` | vscode-jupyter `plotSaveHandler.ts` | **新增**：图片 MIME 持久化，返回带 savedPaths 的 output |
 | `jupyter/contents-client.ts` | `jupyter/client/generated/apis/ContentsApi.ts` | **重写**：手写 REST client，修复路径编码 |
 | `transfer/common.ts` | 无对应 | **全新**：传输共享基础设施 |
 | `transfer/upload.ts` | `colab-runtime-skill/runtime/src/upload.js` | **移植**：从 JS 移植为 TS，适配 ConnectionProvider |

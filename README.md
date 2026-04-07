@@ -159,12 +159,6 @@ Run a file:
 colab exec -f script.py
 ```
 
-Run in batch mode (collects all output and prints once finished, rather than streaming):
-
-```bash
-colab exec -b "print('hello')"
-```
-
 Save image outputs to a specific directory:
 
 ```bash
@@ -479,7 +473,7 @@ colab runtime list
 colab runtime destroy [--endpoint <endpoint>]
 colab runtime restart [--endpoint <endpoint>]
 colab usage
-colab exec [code] [-f <file>] [-e <endpoint>] [-b|--batch] [-o <output-dir>]
+colab exec [code] [-f <file>] [-e <endpoint>] [-o <output-dir>]
 colab fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 colab fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 colab drive login

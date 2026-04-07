@@ -104,14 +104,12 @@ for i in range(3):
     print('row', i)
 "
 colab exec -f script.py
-colab exec -b "print('batch mode')"
 colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
 colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.show()"
 ```
 
 - Use inline code for short snippets.
 - Use `-f` for multi-line scripts or when shell quoting would be fragile.
-- Use `-b` when the user wants final output only rather than streamed logs.
 - Use `-o <dir>` to save image outputs (PNG, JPEG, GIF, SVG) to a specific directory. Without `-o`, images are saved automatically to `~/.config/colab-cli/outputs/<serverId>/`. File names follow `exec<id>-output-<n>.<ext>` for cross-execution isolation. The saved file path is printed to the terminal.
 - **Interactive input**: Code using `input()` or `getpass.getpass()` works transparently — prompts are forwarded to the terminal, user input is sent back to the kernel, and execution continues. Password prompts (`getpass`) suppress character echo automatically. In non-TTY contexts (e.g., piped stdin), an empty string is returned immediately.
 - **Ctrl+C interrupt**: Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel (equivalent to the stop button in the Colab UI). The kernel raises `KeyboardInterrupt`, the traceback is printed, and the CLI exits with a non-zero status. A second Ctrl+C force-exits the CLI immediately. This also works during `input()` prompts — Ctrl+C interrupts the kernel instead of sending input.

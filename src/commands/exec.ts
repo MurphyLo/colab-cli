@@ -7,7 +7,6 @@ import { handleEphemeralAuth } from '../auth/ephemeral.js';
 import { DaemonClient } from '../daemon/client.js';
 import { renderOutput, renderStream } from '../output/terminal-renderer.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
-import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import { createSpinner, isJsonMode, setJsonMode } from '../output/json-output.js';
 
 function formatElapsed(ms: number): string {
@@ -45,7 +44,6 @@ export async function execCommand(
     code?: string;
     file?: string;
     endpoint?: string;
-    batch?: boolean;
     outputDir?: string;
   },
 ): Promise<void> {
@@ -113,18 +111,7 @@ export async function execCommand(
         return readLine(prompt, process.stdout, doInterrupt);
       },
     });
-    if (options.batch) {
-      const collected: KernelOutput[] = [];
-      for await (const output of outputs) {
-        collected.push(output);
-        if (output.type === 'error') hasError = true;
-      }
-      for (const output of collected) {
-        renderOutput(output);
-      }
-    } else {
-      hasError = await renderStream(outputs);
-    }
+    hasError = await renderStream(outputs);
   } finally {
     process.removeAllListeners('SIGINT');
     for (const fn of origSigint) {

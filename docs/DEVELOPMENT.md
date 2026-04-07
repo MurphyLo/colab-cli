@@ -381,7 +381,7 @@ exec.ts: execCommand()
       1. 发送 {"type": "exec", "code": "..."} 到 Unix Socket
       2. 守护进程转发到 KernelConnection.execute()
       3. 守护进程将 iopub 消息逐条通过 Unix Socket 发回
-      4. CLI 端渲染输出（流式或 --batch 模式）
+      4. CLI 端流式渲染输出
       5. 如果任一 `KernelOutput` 的 `type === "error"`，CLI 在完成后设置 `process.exitCode = 1`
   → DaemonClient.close()
 
@@ -983,7 +983,6 @@ npm run dev          # watch 模式编译
 ./dist/index.js runtime create --accelerator H100 --shape high-ram
 ./dist/index.js exec "import torch; print(torch.cuda.is_available())"
 ./dist/index.js exec -f script.py          # 执行文件
-./dist/index.js exec -b "print('hello')"   # --batch 模式（收集所有输出后一次性打印）
 ```
 
 ### 命令总览
@@ -1000,7 +999,7 @@ runtime create --accelerator <name> [--shape <shape>] [-v <version>]
 runtime list
 runtime destroy [--endpoint <endpoint>]
 runtime restart [--endpoint <endpoint>]
-exec [code] [-f <file>] [-e <endpoint>] [-b|--batch]
+exec [code] [-f <file>] [-e <endpoint>] [-o <output-dir>]
 fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 drive login

@@ -220,7 +220,6 @@ const execCmd = program
   .description('execute code on a runtime')
   .option('-f, --file <path>', 'execute code from a file')
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
-  .option('-b, --batch', 'collect all output and print at once instead of streaming')
   .option('-o, --output-dir <path>', 'save image outputs (png, jpeg, gif, svg) to this directory')
   .option('--bg', 'run in background and return exec ID immediately')
   .action(async (code, opts) => {
@@ -237,7 +236,6 @@ const execCmd = program
         code,
         file: opts.file,
         endpoint: opts.endpoint,
-        batch: opts.batch,
         outputDir: opts.outputDir,
       });
     }

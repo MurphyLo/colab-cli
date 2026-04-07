@@ -1,9 +1,11 @@
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import readline from 'readline';
 import { ColabClient } from '../colab/client.js';
 import { handleEphemeralAuth } from '../auth/ephemeral.js';
 import { DaemonClient } from '../daemon/client.js';
-import { renderOutput, renderStream, setOutputDir } from '../output/terminal-renderer.js';
+import { renderOutput, renderStream } from '../output/terminal-renderer.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import { createSpinner, isJsonMode, setJsonMode } from '../output/json-output.js';
@@ -15,6 +17,25 @@ function formatElapsed(ms: number): string {
   if (m < 60) return `${m}m${s % 60}s`;
   const h = Math.floor(m / 60);
   return `${h}h${m % 60}m`;
+}
+
+/**
+ * Resolve a user-supplied output dir to an absolute path using the CLI's
+ * own CWD. The daemon is a long-running background process whose CWD is
+ * almost never the same as the user's terminal CWD, so relative paths
+ * MUST be resolved on the CLI side before being sent over IPC.
+ *
+ * Also expands a leading `~` (which the shell normally handles, but not
+ * when the user quotes the path).
+ */
+function resolveOutputDir(dir: string): string {
+  let expanded = dir;
+  if (expanded === '~') {
+    expanded = os.homedir();
+  } else if (expanded.startsWith('~/')) {
+    expanded = path.join(os.homedir(), expanded.slice(2));
+  }
+  return path.resolve(process.cwd(), expanded);
 }
 
 export async function execCommand(
@@ -43,7 +64,9 @@ export async function execCommand(
     setJsonMode(false);
   }
 
-  setOutputDir(options.outputDir);
+  const absoluteOutputDir = options.outputDir
+    ? resolveOutputDir(options.outputDir)
+    : undefined;
 
   const server = options.endpoint
     ? runtimeManager.getServerByEndpoint(options.endpoint)
@@ -78,6 +101,7 @@ export async function execCommand(
   let hasError = false;
   try {
     const outputs = client.exec(code, {
+      outputDir: absoluteOutputDir,
       handleEphemeralAuth: async (authType) => {
         await handleEphemeralAuth(colabClient, server.endpoint, authType, server.label);
       },
@@ -120,6 +144,7 @@ export async function execBgCommand(
     code?: string;
     file?: string;
     endpoint?: string;
+    outputDir?: string;
   },
 ): Promise<void> {
   let code: string;
@@ -131,6 +156,10 @@ export async function execBgCommand(
     console.error('Provide code as argument or use -f <file>');
     process.exit(1);
   }
+
+  const absoluteOutputDir = options.outputDir
+    ? resolveOutputDir(options.outputDir)
+    : undefined;
 
   const server = options.endpoint
     ? runtimeManager.getServerByEndpoint(options.endpoint)
@@ -151,7 +180,7 @@ export async function execBgCommand(
   }
 
   try {
-    const execId = await client.execBackground(code);
+    const execId = await client.execBackground(code, absoluteOutputDir);
     // Print just the exec ID to stdout for scripting
     console.log(execId);
   } finally {

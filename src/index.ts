@@ -230,6 +230,7 @@ const execCmd = program
         code,
         file: opts.file,
         endpoint: opts.endpoint,
+        outputDir: opts.outputDir,
       });
     } else {
       await execCommand(runtimeManager, colabClient, {

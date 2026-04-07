@@ -56,16 +56,26 @@ export class DaemonClient {
   async *exec(
     code: string,
     options?: {
+      outputDir?: string;
       handleEphemeralAuth?: (authType: AuthType) => Promise<void>;
       handleStdinRequest?: (prompt: string, password: boolean) => Promise<string>;
     },
   ): AsyncGenerator<KernelOutput> {
-    this.send({ type: 'exec', code });
+    this.send({
+      type: 'exec',
+      code,
+      ...(options?.outputDir ? { outputDir: options.outputDir } : {}),
+    });
     yield* this.consumeExecMessages(options);
   }
 
-  async execBackground(code: string): Promise<number> {
-    this.send({ type: 'exec', code, background: true });
+  async execBackground(code: string, outputDir?: string): Promise<number> {
+    this.send({
+      type: 'exec',
+      code,
+      background: true,
+      ...(outputDir ? { outputDir } : {}),
+    });
     const msg = await this.nextMessage();
     if (msg.type === 'exec_started') return msg.execId;
     if (msg.type === 'exec_error') throw new Error(msg.message);

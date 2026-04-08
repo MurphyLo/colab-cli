@@ -12,6 +12,9 @@ export interface DriveFileInfo {
   modifiedTime?: string;
   parents?: string[];
   md5Checksum?: string;
+  ownedByMe?: boolean;
+  ownerEmail?: string;
+  ownerDisplayName?: string;
 }
 
 export interface DriveListResult {
@@ -20,6 +23,31 @@ export interface DriveListResult {
 }
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+/**
+ * Sentinel folder ID representing the virtual "Shared with me" collection.
+ * Drive's real ID alphabet is [A-Za-z0-9_-] with lengths in the high teens
+ * and up, so this short literal cannot collide with a real Drive ID.
+ */
+export const SHARED_WITH_ME_ID = 'shared';
+
+const FILE_FIELDS = 'id, name, mimeType, size, modifiedTime, parents, md5Checksum, ownedByMe, owners(displayName,emailAddress)';
+
+function mapFile(f: drive_v3.Schema$File): DriveFileInfo {
+  const owner = f.owners?.[0];
+  return {
+    id: f.id!,
+    name: f.name!,
+    mimeType: f.mimeType!,
+    size: f.size ?? undefined,
+    modifiedTime: f.modifiedTime ?? undefined,
+    parents: (f.parents as string[]) ?? undefined,
+    md5Checksum: f.md5Checksum ?? undefined,
+    ownedByMe: f.ownedByMe ?? undefined,
+    ownerEmail: owner?.emailAddress ?? undefined,
+    ownerDisplayName: owner?.displayName ?? undefined,
+  };
+}
 
 // --- Client creation ---
 
@@ -38,24 +66,22 @@ export async function listFiles(
   pageToken?: string,
 ): Promise<DriveListResult> {
   const drive = createDriveClient(token);
-  const q = `'${parentId || 'root'}' in parents and trashed = false`;
+  const isShared = parentId === SHARED_WITH_ME_ID;
+  // "Shared with me" is a virtual collection: items have no parent in the
+  // user's namespace, so we filter by sharedWithMe instead of an `in parents`
+  // clause. The owner-name ordering matches Drive's web UI for this view.
+  const q = isShared
+    ? 'sharedWithMe = true and trashed = false'
+    : `'${parentId || 'root'}' in parents and trashed = false`;
   const res = await drive.files.list({
     q,
-    fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, parents, md5Checksum)',
+    fields: `nextPageToken, files(${FILE_FIELDS})`,
     pageSize: 100,
-    orderBy: 'folder,name',
+    orderBy: isShared ? 'folder,sharedWithMeTime desc,name' : 'folder,name',
     pageToken: pageToken || undefined,
   });
 
-  const files: DriveFileInfo[] = (res.data.files || []).map((f) => ({
-    id: f.id!,
-    name: f.name!,
-    mimeType: f.mimeType!,
-    size: f.size ?? undefined,
-    modifiedTime: f.modifiedTime ?? undefined,
-    parents: (f.parents as string[]) ?? undefined,
-    md5Checksum: f.md5Checksum ?? undefined,
-  }));
+  const files: DriveFileInfo[] = (res.data.files || []).map(mapFile);
 
   return { files, nextPageToken: res.data.nextPageToken };
 }
@@ -67,17 +93,27 @@ export async function getFileMetadata(
   const drive = createDriveClient(token);
   const res = await drive.files.get({
     fileId,
-    fields: 'id, name, mimeType, size, modifiedTime, parents, md5Checksum',
+    fields: FILE_FIELDS,
   });
-  return {
-    id: res.data.id!,
-    name: res.data.name!,
-    mimeType: res.data.mimeType!,
-    size: res.data.size ?? undefined,
-    modifiedTime: res.data.modifiedTime ?? undefined,
-    parents: (res.data.parents as string[]) ?? undefined,
-    md5Checksum: res.data.md5Checksum ?? undefined,
-  };
+  return mapFile(res.data);
+}
+
+export async function copyDriveItem(
+  token: string,
+  fileId: string,
+  newParentId: string,
+  newName?: string,
+): Promise<DriveFileInfo> {
+  const drive = createDriveClient(token);
+  const res = await drive.files.copy({
+    fileId,
+    requestBody: {
+      parents: [newParentId],
+      ...(newName ? { name: newName } : {}),
+    },
+    fields: FILE_FIELDS,
+  });
+  return mapFile(res.data);
 }
 
 export async function downloadFile(
@@ -165,19 +201,12 @@ export async function findFileByName(
   const q = `name = '${fileName.replace(/'/g, "\\'")}' and '${parentId}' in parents and trashed = false and mimeType != '${FOLDER_MIME}'`;
   const res = await drive.files.list({
     q,
-    fields: 'files(id, name, mimeType, size, md5Checksum)',
+    fields: `files(${FILE_FIELDS})`,
     pageSize: 1,
   });
   const files = res.data.files || [];
   if (files.length === 0) return undefined;
-  const f = files[0];
-  return {
-    id: f.id!,
-    name: f.name!,
-    mimeType: f.mimeType!,
-    size: f.size ?? undefined,
-    md5Checksum: f.md5Checksum ?? undefined,
-  };
+  return mapFile(files[0]);
 }
 
 export { FOLDER_MIME };

@@ -169,6 +169,7 @@ colab drive delete <file-id> --permanent
 
 - `colab drive` has its own OAuth session and does not rely on `colab auth login`.
 - Drive commands use file IDs and folder IDs, not human-readable names or path strings. If the user only knows a name, list the folder first to find the ID.
+- `colab drive list` can also show files shared with you, and `drive move` copies items you do not own instead of moving them.
 - `drive upload` is resumable for large files and can continue after interruption by re-running the same command.
 - For large assets, durable storage, or workflows that rely on `drive.mount('/content/drive')`, prefer `colab drive` over `colab fs`.
 

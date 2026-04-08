@@ -715,7 +715,7 @@ function createDriveClient(accessToken: string): drive_v3.Drive
 
 | 函数 | 用途 |
 |---|---|
-| `listFiles(token, parentId?, pageToken?)` | 列出文件夹内容（100 项/页，按 folder+name 排序） |
+| `listFiles(token, parentId?, pageToken?)` | 列出文件夹内容（100 项/页，按 folder+name 排序，也支持查看分享给你的文件） |
 | `getFileMetadata(token, fileId)` | 获取单个文件元数据（含 md5Checksum） |
 | `downloadFile(token, fileId, destPath)` | 流式下载到本地 |
 | `createFolder(token, name, parentId?)` | 创建文件夹 |
@@ -725,6 +725,8 @@ function createDriveClient(accessToken: string): drive_v3.Drive
 | `findFileByName(token, fileName, parentId)` | 按名称查找文件（用于 MD5 去重） |
 
 **所有参数均使用 raw ID**：Google Drive 允许同一文件夹内存在同名文件/文件夹，因此基于名称/路径的解析不稳健。所有命令的文件/文件夹参数统一使用 Drive file ID，用户通过 `list` 获取 ID。未指定父文件夹时默认为 `root`。
+
+`drive move` 对自己不拥有的文件会退化为复制；自己拥有的文件仍按正常移动处理。
 
 ### 5.3 可续传上传
 

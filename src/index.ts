@@ -370,7 +370,9 @@ drive
 
 drive
   .command('list [folder-id]')
-  .description('list files in a Google Drive folder')
+  .description(
+    'list files in a Google Drive folder, including files shared with you',
+  )
   .action(async (folderId) => {
     const da = await ensureDriveLoggedIn();
     await driveListCommand(da, folderId);
@@ -414,7 +416,9 @@ drive
 
 drive
   .command('move <item-id>')
-  .description('move a file or folder on Google Drive')
+  .description(
+    'move a file or folder on Google Drive (shared items you do not own are copied instead)',
+  )
   .requiredOption('--to <folder-id>', 'destination folder ID')
   .action(async (itemId, opts) => {
     const da = await ensureDriveLoggedIn();

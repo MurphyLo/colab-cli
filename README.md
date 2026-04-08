@@ -343,6 +343,26 @@ Upload features:
 - **Resumable**: Files >5 MiB use Google's resumable upload protocol (8 MiB chunks). Interrupted uploads can be resumed by re-running the same command.
 - **MD5 dedup**: Skips upload if an identical file (by MD5) already exists in the target folder.
 
+### Shared with me
+
+Files and folders other people have shared with you are reachable as a **virtual folder** named `Shared with me` at the bottom of the root listing. Its sentinel ID is `shared`:
+
+```bash
+colab drive list                  # My Drive root; "Shared with me/" appears at the end
+colab drive list shared           # browse items shared with you
+```
+
+Inside the shared view, every entry is a real Drive file with a real ID, so the existing commands work transparently:
+
+```bash
+colab drive download <file-id>            # download a shared file
+colab drive move <file-id> --to <folder>  # see note below
+```
+
+Because Shared with me items have no parent in your own namespace, a true "move" is impossible for files you don't own. In that case `colab drive move` **automatically falls back to a copy** into the destination folder, prints a clear note explaining what happened, and the new copy is owned by you. Files you do own move normally. In `--json` mode the result includes `"mode": "moved"` or `"mode": "copied"` (with a `newFileId`) so scripts can distinguish the two outcomes.
+
+`colab drive delete` is rejected for shared files you don't own (only the owner can delete them); use the Drive web UI if you want to remove your access.
+
 ### Custom OAuth Credentials
 
 By default, Drive commands use shared OAuth credentials. If you hit quota limits, create your own GCP OAuth client:

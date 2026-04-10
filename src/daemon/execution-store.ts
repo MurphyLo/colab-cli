@@ -1,10 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import type { AuthType } from '../colab/api.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import { CONFIG_DIR } from '../config.js';
 import { saveOutputImages } from './image-saver.js';
 
-export type ExecStatus = 'running' | 'input' | 'done' | 'error' | 'crashed';
+export type ExecStatus = 'running' | 'input' | 'auth' | 'done' | 'error' | 'crashed';
 
 interface Execution {
   id: number;
@@ -17,6 +18,7 @@ interface Execution {
   hasErrorOutput: boolean; // internal: tracks if any error output was seen
   errorMessage?: string;
   pendingInput?: { prompt: string; password: boolean };
+  pendingAuth?: { authType: AuthType };
   /** Absolute directory where image outputs are persisted by image-saver. */
   outputDir: string;
   /** Monotonic counter for naming saved image files (exec<id>-output-<n>). */
@@ -279,13 +281,27 @@ export class ExecutionStore {
     exec.status = 'running';
   }
 
+  setPendingAuth(execId: number, authType: AuthType): void {
+    const exec = this.executions.get(execId);
+    if (!exec) return;
+    exec.pendingAuth = { authType };
+    exec.status = 'auth';
+  }
+
+  clearPendingAuth(execId: number): void {
+    const exec = this.executions.get(execId);
+    if (!exec) return;
+    exec.pendingAuth = undefined;
+    exec.status = 'running';
+  }
+
   /** Remove completed executions. If execId given, remove that one; otherwise remove all non-running. */
   clear(execId?: number): number {
     const ids = execId !== undefined ? [execId] : [...this.executions.keys()];
     let cleared = 0;
     for (const id of ids) {
       const exec = this.executions.get(id);
-      if (exec && exec.status !== 'running' && exec.status !== 'input') {
+      if (exec && exec.status !== 'running' && exec.status !== 'input' && exec.status !== 'auth') {
         this.removeExecution(id);
         cleared++;
       }

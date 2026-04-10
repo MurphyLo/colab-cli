@@ -46,6 +46,8 @@ interface ActiveExecution {
   attachedSocket?: net.Socket;
   pendingAuthRequests: Map<string, (error?: string) => void>;
   pendingStdinResolve?: (value: string | undefined) => void;
+  /** Resolves when a CLI socket attaches while auth is waiting. */
+  pendingAuthAttachResolve?: (attached: boolean) => void;
 }
 
 async function main() {
@@ -106,12 +108,24 @@ async function main() {
 
   const requestEphemeralAuth = async (authType: AuthType): Promise<void> => {
     const active = execState.activeExecution;
-    if (!active?.attachedSocket || active.attachedSocket.destroyed) {
-      throw new Error(
-        'No CLI session attached to complete Google Drive authorization',
-      );
+    if (!active) {
+      throw new Error('No active execution for auth');
     }
 
+    // No attached socket (background exec) — wait for a CLI to attach
+    if (!active.attachedSocket || active.attachedSocket.destroyed) {
+      store.setPendingAuth(active.execId, authType);
+      const attached = await new Promise<boolean>((resolve) => {
+        active.pendingAuthAttachResolve = resolve;
+      });
+      active.pendingAuthAttachResolve = undefined;
+      store.clearPendingAuth(active.execId);
+      if (!attached) {
+        throw new Error('Authorization interrupted');
+      }
+    }
+
+    // Socket is now available — proceed with normal auth flow
     const requestId = randomUUID();
     const result = await new Promise<string | undefined>((resolve) => {
       active.pendingAuthRequests.set(requestId, resolve);
@@ -331,6 +345,7 @@ function handleClient(
             outputs,
             status: exec.status,
             ...(exec.pendingInput ? { pendingInput: exec.pendingInput } : {}),
+            ...(exec.pendingAuth ? { pendingAuth: exec.pendingAuth } : {}),
           });
         } else {
           // Streaming mode: replay buffered outputs then attach for live
@@ -359,6 +374,11 @@ function handleClient(
                 password: exec.pendingInput.password,
               });
             }
+            // If auth is waiting for a socket, wake it up — it will send
+            // auth_required to this socket once resumed
+            if (active.pendingAuthAttachResolve) {
+              active.pendingAuthAttachResolve(true);
+            }
           }
         }
         break;
@@ -380,6 +400,10 @@ function handleClient(
           if (active.pendingStdinResolve) {
             active.pendingStdinResolve(undefined);
             active.pendingStdinResolve = undefined;
+          }
+          if (active.pendingAuthAttachResolve) {
+            active.pendingAuthAttachResolve(false);
+            active.pendingAuthAttachResolve = undefined;
           }
         } else if (msg.stdin !== undefined) {
           if (active.pendingStdinResolve) {
@@ -418,6 +442,10 @@ function handleClient(
           execState.activeExecution.pendingStdinResolve(undefined);
           execState.activeExecution.pendingStdinResolve = undefined;
         }
+        if (execState.activeExecution?.pendingAuthAttachResolve) {
+          execState.activeExecution.pendingAuthAttachResolve(false);
+          execState.activeExecution.pendingAuthAttachResolve = undefined;
+        }
         break;
       case 'restart':
         try {
@@ -449,6 +477,8 @@ function handleClient(
         active.pendingStdinResolve(undefined);
         active.pendingStdinResolve = undefined;
       }
+      // Don't cancel pendingAuthAttachResolve on detach — let it keep
+      // waiting for the next attach (the execution is still running)
       active.attachedSocket = undefined;
     }
     rl.close();

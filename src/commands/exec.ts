@@ -208,6 +208,9 @@ export async function execAttachCommand(
       if (result.pendingInput) {
         console.error(`[waiting for input: "${result.pendingInput.prompt}"]`);
       }
+      if (result.pendingAuth) {
+        console.error(`[waiting for authorization — run 'colab exec attach ${execId}' to complete]`);
+      }
       console.error(`[status: ${result.status}]`);
       if (result.outputs.some((o) => o.type === 'error')) {
         process.exitCode = 1;

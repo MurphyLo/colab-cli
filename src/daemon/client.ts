@@ -100,6 +100,7 @@ export class DaemonClient {
     outputs: KernelOutput[];
     status: ExecStatus;
     pendingInput?: { prompt: string; password: boolean };
+    pendingAuth?: { authType: AuthType };
   }> {
     this.send({
       type: 'exec_attach',
@@ -113,6 +114,7 @@ export class DaemonClient {
         outputs: msg.outputs,
         status: msg.status,
         ...(msg.pendingInput ? { pendingInput: msg.pendingInput } : {}),
+        ...(msg.pendingAuth ? { pendingAuth: msg.pendingAuth } : {}),
       };
     }
     if (msg.type === 'exec_error') throw new Error(msg.message);

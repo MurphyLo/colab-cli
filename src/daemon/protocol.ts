@@ -31,7 +31,7 @@ export type ServerMessage =
       outputs: KernelOutput[];
       status: ExecStatus;
       pendingInput?: { prompt: string; password: boolean };
-      pendingAuth?: { authType: AuthType };
+      pendingAuth?: { authType: AuthType; authUrl?: string };
     }
   | { type: 'exec_list_result'; executions: ExecListEntry[] }
   | { type: 'exec_clear_result'; count: number };

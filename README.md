@@ -216,6 +216,11 @@ If executed code triggers `drive.mount('/content/drive')` or another ephemeral
 Google credential request, the foreground CLI session will prompt for consent,
 open the browser-based OAuth flow, and continue once authorization is complete.
 
+For background executions, the daemon stores the OAuth URL in the execution
+state. `exec attach --no-wait`, `exec attach --tail`, and streaming
+`exec attach` all surface that URL, and the daemon retries credential
+propagation automatically every 5 seconds after the browser flow completes.
+
 If automatic Drive mounting is configured (see below), `drive.mount()` will
 detect the pre-mounted filesystem and return immediately without any auth prompt.
 
@@ -234,7 +239,11 @@ List all executions:
 colab exec list
 ```
 
-Each execution shows one of five statuses: `running` (in progress), `done` (completed successfully), `error` (Python exception or interrupt), `crashed` (daemon-level failure), or `input` (waiting for `input()` response). The `ELAPSED` column shows the execution duration (e.g., `5s`, `2m15s`, `1h30m`).
+Each execution shows one of six statuses: `running` (in progress), `done`
+(completed successfully), `error` (Python exception or interrupt), `crashed`
+(daemon-level failure), `input` (waiting for `input()` response), or `auth`
+(waiting for browser-based authorization). The `ELAPSED` column shows the
+execution duration (e.g., `5s`, `2m15s`, `1h30m`).
 
 View buffered output without blocking:
 
@@ -243,11 +252,17 @@ colab exec attach 1 --no-wait
 colab exec attach 1 --tail 20        # last 20 outputs only (implies --no-wait)
 ```
 
+If the execution is paused on browser auth, these snapshot commands print the
+stored OAuth URL and exit immediately.
+
 Attach for live streaming (blocks until execution finishes, like foreground exec):
 
 ```bash
 colab exec attach 1
 ```
+
+If the execution is currently waiting on browser auth, streaming attach also
+prints the stored OAuth URL before continuing to wait for live output.
 
 Send stdin to a running execution:
 

@@ -115,7 +115,7 @@ colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.s
 - **Ctrl+C interrupt**: Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel (equivalent to the stop button in the Colab UI). The kernel raises `KeyboardInterrupt`, the traceback is printed, and the CLI exits with a non-zero status. A second Ctrl+C force-exits the CLI immediately. This also works during `input()` prompts — Ctrl+C interrupts the kernel instead of sending input.
 - If the executed Python code raises an exception, `colab exec` exits non-zero.
 - If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
-- **Background execution** (`--bg`): The CLI returns immediately with an exec ID (printed to stdout) while the kernel continues executing. Use `exec attach`, `exec list`, and `exec send` to monitor and interact with background executions. Only one execution (foreground or background) can run at a time — the Jupyter kernel is serial.
+- **Background execution** (`--bg`): The CLI returns immediately with an exec ID (printed to stdout) while the kernel continues executing. Use `exec attach`, `exec list`, and `exec send` to monitor and interact with background executions. If background code triggers browser auth, the daemon stores the auth URL, snapshot/streaming attach commands print it, and the daemon retries credential propagation automatically every 5 seconds until the browser flow completes or times out. Only one execution (foreground or background) can run at a time — the Jupyter kernel is serial.
 
 ### Background Execution Management
 
@@ -132,10 +132,10 @@ colab exec clear 1
 ```
 
 - Use `--bg` to run long tasks without blocking the CLI (exec ID printed to stdout).
-- Use `exec list` to see all executions and their status (running/done/error/crashed/input) and elapsed time.
-- Use `exec attach <id> --no-wait` to get a snapshot of buffered output and exit immediately.
+- Use `exec list` to see all executions and their status (`running`, `done`, `error`, `crashed`, `input`, or `auth`) and elapsed time.
+- Use `exec attach <id> --no-wait` to get a snapshot of buffered output and exit immediately. If the execution is paused on browser auth, the stored OAuth URL is printed in that snapshot.
 - Use `exec attach <id> --tail <n>` to get only the last N outputs (implies `--no-wait`, so `--no-wait` can be omitted).
-- Use `exec attach <id>` (without `--no-wait`) to replay buffered output and continue streaming live output until the execution finishes.
+- Use `exec attach <id>` (without `--no-wait`) to replay buffered output and continue streaming live output until the execution finishes. If the execution is paused on browser auth, streaming attach also prints the stored OAuth URL before waiting.
 - Use `exec send <id> --stdin "value"` to respond to a pending `input()` prompt in a background execution.
 - Use `exec send <id> --interrupt` to interrupt (Ctrl+C equivalent) a background execution.
 - Use `exec clear` to remove all completed executions, or `exec clear <id>` to remove a specific one. Running and input-waiting executions are preserved.

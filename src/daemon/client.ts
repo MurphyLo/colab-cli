@@ -100,7 +100,7 @@ export class DaemonClient {
     outputs: KernelOutput[];
     status: ExecStatus;
     pendingInput?: { prompt: string; password: boolean };
-    pendingAuth?: { authType: AuthType };
+    pendingAuth?: { authType: AuthType; authUrl?: string };
   }> {
     this.send({
       type: 'exec_attach',

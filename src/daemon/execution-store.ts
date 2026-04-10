@@ -18,7 +18,7 @@ interface Execution {
   hasErrorOutput: boolean; // internal: tracks if any error output was seen
   errorMessage?: string;
   pendingInput?: { prompt: string; password: boolean };
-  pendingAuth?: { authType: AuthType };
+  pendingAuth?: { authType: AuthType; authUrl?: string };
   /** Absolute directory where image outputs are persisted by image-saver. */
   outputDir: string;
   /** Monotonic counter for naming saved image files (exec<id>-output-<n>). */
@@ -281,10 +281,10 @@ export class ExecutionStore {
     exec.status = 'running';
   }
 
-  setPendingAuth(execId: number, authType: AuthType): void {
+  setPendingAuth(execId: number, authType: AuthType, authUrl?: string): void {
     const exec = this.executions.get(execId);
     if (!exec) return;
-    exec.pendingAuth = { authType };
+    exec.pendingAuth = { authType, ...(authUrl ? { authUrl } : {}) };
     exec.status = 'auth';
   }
 

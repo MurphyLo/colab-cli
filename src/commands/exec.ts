@@ -209,7 +209,12 @@ export async function execAttachCommand(
         console.error(`[waiting for input: "${result.pendingInput.prompt}"]`);
       }
       if (result.pendingAuth) {
-        console.error(`[waiting for authorization — run 'colab exec attach ${execId}' to complete]`);
+        if (result.pendingAuth.authUrl) {
+          console.error('[waiting for authorization — visit the URL below; execution will resume automatically after authorization completes]');
+          console.error(`[auth url: ${result.pendingAuth.authUrl}]`);
+        } else {
+          console.error(`[waiting for authorization — run 'colab exec attach ${execId}' to complete]`);
+        }
       }
       console.error(`[status: ${result.status}]`);
       if (result.outputs.some((o) => o.type === 'error')) {

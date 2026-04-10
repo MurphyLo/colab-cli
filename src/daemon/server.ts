@@ -7,7 +7,7 @@ import readline from 'readline';
 import { randomUUID, UUID } from 'crypto';
 import { AuthManager } from '../auth/auth-manager.js';
 import { AuthType } from '../colab/api.js';
-import { ColabClient } from '../colab/client.js';
+import { ColabClient, ColabRequestError } from '../colab/client.js';
 import { KernelConnection } from '../jupyter/kernel-connection.js';
 import { KeepAlive } from '../runtime/keep-alive.js';
 import { ConnectionRefresher } from '../runtime/connection-refresher.js';
@@ -46,9 +46,12 @@ interface ActiveExecution {
   attachedSocket?: net.Socket;
   pendingAuthRequests: Map<string, (error?: string) => void>;
   pendingStdinResolve?: (value: string | undefined) => void;
-  /** Resolves when a CLI socket attaches while auth is waiting. */
-  pendingAuthAttachResolve?: (attached: boolean) => void;
+  /** Resolves when background auth polling is interrupted. */
+  pendingAuthInterruptResolve?: () => void;
 }
+
+const AUTH_POLL_INTERVAL_MS = 5_000;
+const AUTH_POLL_TIMEOUT_MS = 120_000;
 
 async function main() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
@@ -106,22 +109,96 @@ async function main() {
   const store = new ExecutionStore(serverId);
   const execState: { activeExecution?: ActiveExecution } = {};
 
+  const propagateCredentialsOrThrow = async (authType: AuthType): Promise<void> => {
+    const result = await colabClient.propagateCredentials(server.endpoint, {
+      authType,
+      dryRun: false,
+    });
+    if (!result.success) {
+      throw new Error(`[${authType}] Credentials propagation unsuccessful`);
+    }
+  };
+
+  const tryPropagateCredentialsForPolling = async (authType: AuthType): Promise<boolean> => {
+    try {
+      const result = await colabClient.propagateCredentials(server.endpoint, {
+        authType,
+        dryRun: false,
+      });
+      return result.success;
+    } catch (err) {
+      // During polling, treat 4xx responses as "authorization not ready yet"
+      // and keep waiting; surface transport and server failures immediately.
+      if (err instanceof ColabRequestError && err.status >= 400 && err.status < 500) {
+        return false;
+      }
+      throw err;
+    }
+  };
+
   const requestEphemeralAuth = async (authType: AuthType): Promise<void> => {
     const active = execState.activeExecution;
     if (!active) {
       throw new Error('No active execution for auth');
     }
 
-    // No attached socket (background exec) — wait for a CLI to attach
-    if (!active.attachedSocket || active.attachedSocket.destroyed) {
-      store.setPendingAuth(active.execId, authType);
-      const attached = await new Promise<boolean>((resolve) => {
-        active.pendingAuthAttachResolve = resolve;
+    // Pre-compute auth state so we can (a) auto-propagate when credentials
+    // are already available and (b) surface the auth URL to non-interactive
+    // callers such as `exec attach --no-wait` and `exec list`.
+    let authUrl: string | undefined;
+    try {
+      const dryRun = await colabClient.propagateCredentials(server.endpoint, {
+        authType,
+        dryRun: true,
       });
-      active.pendingAuthAttachResolve = undefined;
-      store.clearPendingAuth(active.execId);
-      if (!attached) {
-        throw new Error('Authorization interrupted');
+      if (dryRun.success) {
+        // Credentials already available — propagate directly, no user action.
+        await propagateCredentialsOrThrow(authType);
+        return;
+      }
+      if (!dryRun.unauthorizedRedirectUri) {
+        throw new Error(
+          `[${authType}] Credentials propagation dry run returned unexpected results: ${JSON.stringify(dryRun)}`,
+        );
+      }
+      authUrl = dryRun.unauthorizedRedirectUri;
+    } catch (err) {
+      console.error('dryRun pre-check failed:', err);
+    }
+
+    // No attached socket (background exec) — store the URL and poll every 5s
+    // with dryRun=false until propagation succeeds.
+    if (!active.attachedSocket || active.attachedSocket.destroyed) {
+      if (!authUrl) {
+        throw new Error(`[${authType}] No authorization URL available for background auth`);
+      }
+      store.setPendingAuth(active.execId, authType, authUrl);
+      const interrupted = new Promise<'interrupted'>((resolve) => {
+        active.pendingAuthInterruptResolve = () => resolve('interrupted');
+      });
+      try {
+        const deadline = Date.now() + AUTH_POLL_TIMEOUT_MS;
+        while (true) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            throw new Error('Authorization timed out');
+          }
+
+          const tick = new Promise<'tick'>((resolve) => {
+            setTimeout(() => resolve('tick'), Math.min(AUTH_POLL_INTERVAL_MS, remaining));
+          });
+          const wakeReason = await Promise.race([tick, interrupted]);
+          if (wakeReason === 'interrupted') {
+            throw new Error('Authorization interrupted');
+          }
+
+          if (await tryPropagateCredentialsForPolling(authType)) {
+            return;
+          }
+        }
+      } finally {
+        active.pendingAuthInterruptResolve = undefined;
+        store.clearPendingAuth(active.execId);
       }
     }
 
@@ -374,10 +451,19 @@ function handleClient(
                 password: exec.pendingInput.password,
               });
             }
-            // If auth is waiting for a socket, wake it up — it will send
-            // auth_required to this socket once resumed
-            if (active.pendingAuthAttachResolve) {
-              active.pendingAuthAttachResolve(true);
+            // Surface the current auth URL on streaming attach so users don't
+            // have to switch to --no-wait just to retrieve it.
+            if (exec.pendingAuth?.authUrl) {
+              send({
+                type: 'output',
+                output: {
+                  type: 'stream',
+                  name: 'stderr',
+                  text:
+                    '[waiting for authorization — visit the URL below; execution will resume automatically after authorization completes]\n' +
+                    `[auth url: ${exec.pendingAuth.authUrl}]\n`,
+                },
+              });
             }
           }
         }
@@ -400,10 +486,6 @@ function handleClient(
           if (active.pendingStdinResolve) {
             active.pendingStdinResolve(undefined);
             active.pendingStdinResolve = undefined;
-          }
-          if (active.pendingAuthAttachResolve) {
-            active.pendingAuthAttachResolve(false);
-            active.pendingAuthAttachResolve = undefined;
           }
         } else if (msg.stdin !== undefined) {
           if (active.pendingStdinResolve) {
@@ -442,9 +524,9 @@ function handleClient(
           execState.activeExecution.pendingStdinResolve(undefined);
           execState.activeExecution.pendingStdinResolve = undefined;
         }
-        if (execState.activeExecution?.pendingAuthAttachResolve) {
-          execState.activeExecution.pendingAuthAttachResolve(false);
-          execState.activeExecution.pendingAuthAttachResolve = undefined;
+        if (execState.activeExecution?.pendingAuthInterruptResolve) {
+          execState.activeExecution.pendingAuthInterruptResolve();
+          execState.activeExecution.pendingAuthInterruptResolve = undefined;
         }
         break;
       case 'restart':
@@ -477,8 +559,7 @@ function handleClient(
         active.pendingStdinResolve(undefined);
         active.pendingStdinResolve = undefined;
       }
-      // Don't cancel pendingAuthAttachResolve on detach — let it keep
-      // waiting for the next attach (the execution is still running)
+      // Detach the socket but keep the execution running in the daemon.
       active.attachedSocket = undefined;
     }
     rl.close();

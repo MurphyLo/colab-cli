@@ -435,23 +435,30 @@ exec.ts: execCommand()
 ```
 1. Runtime 发送 colab_request (msg_type='colab_request', metadata.colab_request_type='request_auth')
 2. 守护进程内的 KernelConnection 拦截该消息
-3. 守护进程通过 Unix Socket 向前台 CLI 发送 `auth_required { requestId, authType }`
-4. 前台 CLI 调用 `auth/ephemeral.ts`
-   4.1 `propagateCredentials(endpoint, { authType, dryRun: true })`
-   4.2 如果已授权 → 直接 `propagateCredentials(..., dryRun: false)`
-   4.3 如果未授权 → 在终端提示用户，并以与 `auth login` 一致的格式打印 URL / 打开浏览器
-       `--json` 模式下，说明文字和 readline prompt 走 stderr，stdout 额外发出 `{"event":"auth_required", ...}` 事件
-   4.4 用户在浏览器完成 OAuth 后，前台 CLI 执行 `propagateCredentials(..., dryRun: false)`
-5. 前台 CLI 通过 Unix Socket 回送 `auth_response { requestId, error? }`
-6. 守护进程收到 `auth_response` 后，向 kernel 发送 `input_reply`
-   content.value.type='colab_reply', content.value.colab_msg_id=<id>
+3. 分两条路径处理：
+   3.1 前台 exec / attach：
+       - 守护进程通过 Unix Socket 向前台 CLI 发送 `auth_required { requestId, authType }`
+       - 前台 CLI 调用 `auth/ephemeral.ts`
+         a. `propagateCredentials(endpoint, { authType, dryRun: true })`
+         b. 如果已授权 → 直接 `propagateCredentials(..., dryRun: false)`
+         c. 如果未授权 → 在终端提示用户，并以与 `auth login` 一致的格式打印 URL / 打开浏览器
+            `--json` 模式下，说明文字和 readline prompt 走 stderr，stdout 额外发出 `{"event":"auth_required", ...}` 事件
+         d. 用户在浏览器完成 OAuth 后，前台 CLI 执行 `propagateCredentials(..., dryRun: false)`
+       - 前台 CLI 通过 Unix Socket 回送 `auth_response { requestId, error? }`
+       - 守护进程收到 `auth_response` 后，向 kernel 发送 `input_reply`
+         content.value.type='colab_reply', content.value.colab_msg_id=<id>
+   3.2 后台 exec（无 attached socket）：
+       - 守护进程先执行一次 `propagateCredentials(..., dryRun: true)` 获取授权 URL
+       - 将 URL 记录到 execution store，使 `exec attach --no-wait`、`exec attach --tail` 和 streaming `exec attach` 都能显示该 URL
+       - 用户在浏览器完成 OAuth 后，守护进程每 5 秒重试一次 `propagateCredentials(..., dryRun: false)`
+       - 成功后自动恢复执行；超时则将执行标记为失败
 ```
 
-**设计原因**：守护进程是 `detached` 后台进程，不能可靠地直接占用当前终端做交互，也不能在沙箱环境里稳定拉起本机 GUI 浏览器。因此 `drive.mount()` 的授权提示必须由前台 CLI 进程承接，守护进程只负责检测 kernel 的 `request_auth` 并转发。
+**设计原因**：守护进程是 `detached` 后台进程，不能可靠地直接占用当前终端做交互，也不能在沙箱环境里稳定拉起本机 GUI 浏览器。因此前台 exec 仍由附着的 CLI 承接交互式授权；后台 exec 则改为“显示 URL + daemon 自动轮询传播完成”，避免要求额外的确认命令。
 
 **非交互 JSON 行为**：如果 `--json` 模式下 stdout 被脚本消费且 stdin 不是 TTY，前台 CLI 在需要用户完成浏览器授权时会抛出 `AuthConsentError`；CLI 入口统一转换为 `{"error":"consent_required","authType":"...","url":"..."}`，并以非零状态码退出，避免卡死在不可交互的 `readline` 上。
 
-**本地 Drive 凭据旁路**：当 `MountAuthManager.isConfigured()` 且已授权时（即 DriveFS 环境变量已配置且 `drive-mount login` 已完成），`handleEphemeralAuth()` 对 `DFS_EPHEMERAL` 类型直接 return，跳过整个 `propagateCredentials` 流程。这使得 Python 代码中的 `drive.mount()` 无需浏览器交互——`blocking_request('request_auth')` 成功返回后，`drive.mount()` 检测到已存在的挂载点即刻完成。
+**本地 Drive 凭据旁路**：当 `MountAuthManager.isConfigured()` 且已授权时（即 DriveFS 环境变量已配置且 `drive-mount login` 已完成），`handleEphemeralAuth()` 对 `DFS_EPHEMERAL` 类型直接 return，跳过整个 `propagateCredentials` 流程。这使得 Python 代码中的 `drive.mount()` 无需浏览器交互——`blocking_request('request_auth')` 成功返回后，`drive.mount()` 再按 Colab 自身逻辑检查是否已挂载。
 
 ### 4.5 stdin 透传与 Ctrl+C 中断
 
@@ -795,7 +802,7 @@ driveMountCommand()
       3. 通过 daemon exec 执行
 
 Python 脚本内部:
-  1. 启动 HTTP server (0.0.0.0:8009) 模拟 GCE metadata endpoint
+  1. 启动 HTTP server (`127.0.0.1` 随机端口) 模拟 metadata endpoint
      - /computeMetadata/v1/instance/service-accounts/default/token
        → 返回 { access_token, expires_in, token_type, scope }
      - /computeMetadata/v1/instance/service-accounts/default/email → 用户邮箱
@@ -803,15 +810,14 @@ Python 脚本内部:
      - 其他 GCE 路径 → 空 200 响应
   2. 令牌自动刷新：后台线程使用 refresh token 在过期前刷新 access token
   3. 杀死已有 DriveFS 进程
-  4. 设置 TBE_EPHEM_CREDS_ADDR=172.28.0.1:8009
-  5. 启动 /opt/google/drive/drive --metadata_server_auth_uri=...
+  4. 启动 `/opt/google/drive/drive --metadata_server_auth_uri=http://127.0.0.1:<port>/computeMetadata/v1`
   6. 轮询等待 /content/drive/My Drive 出现（最长 90 秒）
 ```
 
 **关键细节**：
 - DriveFS 要求 token 响应包含 `scope` 字段，否则报 "Received empty scopes" 并退出
-- metadata server 必须监听 `0.0.0.0:8009`（DriveFS 硬编码通过 `TBE_EPHEM_CREDS_ADDR` 访问 `172.28.0.1:8009`）
-- `drive.mount()` 在 Python 中调用时，先发 `blocking_request('request_auth')`，再检查 `os.path.isdir(mountpoint + '/My Drive')`。pre-mount 后两步均快速通过（auth 被旁路，挂载点已存在）
+- metadata server 由这段一次性 Python 脚本在 runtime 内启动，并通过 `--metadata_server_auth_uri=...` 直接传给当前 DriveFS 进程
+- `drive.mount()` 在 Python 中调用时，先发 `blocking_request('request_auth')`，再检查 `os.path.isdir(mountpoint + '/My Drive')`。如果 auth 被旁路且挂载点仍存在，Colab 会打印 “Drive already mounted ...” 并直接返回
 
 ---
 

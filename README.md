@@ -8,6 +8,7 @@ This tool supports:
 - Listing available Colab runtime options
 - Creating and destroying runtimes
 - Executing Python code on an active runtime via a background daemon
+- Interactive shell sessions with attach/detach, background mode, and raw input forwarding
 - Interactive stdin support (`input()` / `getpass`) and Ctrl+C kernel interrupt
 - Streaming outputs directly to the terminal (including automatic image file saving)
 - Uploading and downloading files to/from the runtime filesystem
@@ -289,6 +290,55 @@ Background execution is designed for AI tool use — an AI assistant can start a
 
 Note: The Jupyter kernel is serial — only one execution runs at a time. Starting a new exec while another is running will be rejected.
 
+## Interactive Shell
+
+Open an interactive terminal on the runtime:
+
+```bash
+colab shell
+```
+
+Foreground shell sessions use your current TTY directly. Press `Ctrl+\` to
+detach locally while leaving the remote shell running in the daemon.
+
+Start a detached shell and print its shell ID:
+
+```bash
+colab shell -b
+# 1     ← shell ID printed to stdout
+```
+
+List active shell sessions:
+
+```bash
+colab shell list
+```
+
+Inspect buffered output without blocking:
+
+```bash
+colab shell attach 1 --no-wait
+colab shell attach 1 --tail 4096   # last 4096 bytes only
+```
+
+Re-attach for live streaming:
+
+```bash
+colab shell attach 1
+```
+
+Send raw data or control signals to a detached shell:
+
+```bash
+colab shell send 1 --data "ls -la\\n"
+colab shell send 1 --signal INT    # Ctrl+C
+colab shell send 1 --signal EOF    # Ctrl+D
+```
+
+If another client attaches to the same shell, the previous client is detached
+and notified. Closed shell sessions remain queryable for a short grace period
+so `shell list` and snapshot attach can still inspect the final buffered output.
+
 ## File Transfer
 
 Upload and download files between the local filesystem and the runtime's `/content` directory. Files are transferred via the Jupyter Contents API with automatic chunked transfer for large files.
@@ -451,7 +501,7 @@ Without `--use-env-proxy`, newer Node versions will detect the proxy environment
 
 ## JSON Output (Scripting)
 
-Most commands support a global `--json` flag that keeps stdout machine-readable for shell scripts and automation pipelines (`exec` is excluded — it always uses interactive terminal output).
+Most commands support a global `--json` flag that keeps stdout machine-readable for shell scripts and automation pipelines (`exec` and `shell` are excluded — they use interactive terminal-style output).
 
 Human-facing progress and consent prompts are routed to stderr. Login commands (`auth login`, `drive login`, `drive-mount login`) in `--json` mode are non-blocking: they emit an `auth_required` event with the OAuth URL and timeout, then exit immediately while a background daemon waits for the browser callback. Poll the corresponding `status --json` command to confirm login completion.
 
@@ -495,7 +545,7 @@ export COLAB_DRIVE_CLIENT_SECRET=...
 
 ## Command Summary
 
-Most commands accept the global `--json` flag for machine-readable output (`exec` excluded).
+Most commands accept the global `--json` flag for machine-readable output (`exec` and `shell` excluded).
 
 ```text
 colab auth login
@@ -509,6 +559,10 @@ colab runtime destroy [--endpoint <endpoint>]
 colab runtime restart [--endpoint <endpoint>]
 colab usage
 colab exec [code] [-f <file>] [-e <endpoint>] [-o <output-dir>]
+colab shell [-e <endpoint>] [-b]
+colab shell attach <id> [-e <endpoint>] [--no-wait] [--tail <bytes>]
+colab shell list [-e <endpoint>]
+colab shell send <id> [-e <endpoint>] [--data <data> | --signal <signal>]
 colab fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 colab fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 colab drive login

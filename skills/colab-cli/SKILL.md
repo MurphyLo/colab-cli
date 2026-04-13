@@ -1,8 +1,8 @@
 ---
 name: colab-cli
-description: "Use this skill whenever the user wants to operate Google Colab from the terminal: authenticate, inspect available runtimes, create or destroy a runtime, restart a kernel, check CCU usage, execute Python remotely, upload or download files to a Colab runtime, manage files in Google Drive through `colab drive`, or mount Drive on a runtime via `colab drive-mount`. Prefer this skill even if the user does not mention `colab-cli` explicitly but asks to use a Colab GPU or TPU, run code on Colab from a shell, move files to `/content`, move large files through Drive, mount Drive automatically, or troubleshoot Colab auth, Drive auth, quota, proxy, or runtime lifecycle issues."
+description: "Use this skill whenever the user wants to operate Google Colab from the terminal: authenticate, inspect available runtimes, create or destroy a runtime, restart a kernel, check CCU usage, execute Python remotely, open or manage interactive shell sessions, upload or download files to a Colab runtime, manage files in Google Drive through `colab drive`, or mount Drive on a runtime via `colab drive-mount`. Prefer this skill even if the user does not mention `colab-cli` explicitly but asks to use a Colab GPU or TPU, run code on Colab from a shell, open a terminal on the runtime, move files to `/content`, move large files through Drive, mount Drive automatically, or troubleshoot Colab auth, Drive auth, quota, proxy, shell, or runtime lifecycle issues."
 metadata:
-  short-description: Use the `colab` CLI for Colab auth, runtime, exec (with stdin/interrupt/background), fs, usage, Drive, and Drive mount tasks
+  short-description: Use the `colab` CLI for auth, runtime, exec, shell, fs, usage, Drive, and Drive mount tasks
 ---
 
 # Colab CLI
@@ -24,7 +24,7 @@ Treat `colab --help` and `colab <subcommand> --help` as the source of truth for 
 ## Default Workflow
 
 1. Choose the surface:
-   - Use `colab runtime`, `colab exec`, and `colab fs` for runtime lifecycle, remote execution, and `/content` file transfer.
+   - Use `colab runtime`, `colab exec`, `colab shell`, and `colab fs` for runtime lifecycle, remote execution, interactive terminal access, and `/content` file transfer.
    - Use `colab drive` for Google Drive file management or when the user needs a large-file path outside direct runtime filesystem transfer.
 2. Verify the relevant auth:
    - `colab auth status` for runtime-side operations.
@@ -141,6 +141,29 @@ colab exec clear 1
 - Use `exec clear` to remove all completed executions, or `exec clear <id>` to remove a specific one. Running and input-waiting executions are preserved.
 - If `input()` is called during background execution with no client attached, execution waits until stdin is delivered via `exec send <id> --stdin` or a client attaches.
 
+### Interactive Shell Sessions
+
+```bash
+colab shell
+colab shell --background
+colab shell list
+colab shell attach 1 --no-wait
+colab shell attach 1 --tail 4096
+colab shell attach 1
+colab shell send 1 --data "ls -la\\n"
+colab shell send 1 --signal INT
+```
+
+- Use `colab shell` for a foreground interactive terminal on the latest runtime (or add `--endpoint <endpoint>` when the target matters).
+- Use `colab shell --background` when the caller cannot block on an interactive TTY; it prints a shell ID and leaves the daemon attached to `/colab/tty`.
+- Use `colab shell list` to inspect active shell sessions and whether a client is currently attached.
+- Use `colab shell attach <id> --no-wait` to print buffered output immediately and exit. Use `--tail <bytes>` to limit the replay window by bytes, not lines.
+- Use `colab shell attach <id>` to replay buffered output and continue streaming live output. If another client is already attached, it will be detached and notified.
+- Use `colab shell send <id> --data ...` to inject raw bytes into a detached shell. Escape sequences such as `\\n` and `\\x03` are supported.
+- Use `colab shell send <id> --signal INT|EOF|TSTP|QUIT` for common control characters. `INT` is Ctrl+C, `EOF` is Ctrl+D, `TSTP` is Ctrl+Z, and `QUIT` maps to Ctrl+\.
+- In a foreground shell session, `Ctrl+\` is intercepted locally to detach the CLI without sending the byte to the remote shell.
+- Closed shell sessions remain visible briefly so users can inspect final buffered output before daemon cleanup evicts them.
+
 ### Runtime Filesystem Transfer
 
 ```bash
@@ -203,6 +226,8 @@ colab drive-mount status                 # Check authorization status
 - Resumable Drive upload state is stored under `~/.config/colab-cli/drive-uploads/`.
 - Image outputs from `exec` are saved under `~/.config/colab-cli/outputs/<serverId>/`.
 - Execution history (background and foreground) is stored under `~/.config/colab-cli/exec-logs-<server-id>/`.
+- If `colab shell send` reports that the shell was not found or is closed, the daemon has already cleaned it up or the shell has exited; run `colab shell list` to confirm the current shell IDs.
+- `colab shell attach --tail <n>` uses bytes, not lines.
 - If a Drive command fails because the input looks like a filename instead of an ID, run `colab drive list` first and use the actual file or folder ID.
 - If `input()` prompts are not appearing or return empty, check that stdin is a TTY. In non-TTY mode (piped input, CI), prompts are skipped and empty strings are returned.
 - If Ctrl+C does not interrupt a long-running kernel execution, press Ctrl+C a second time to force-exit the CLI process.

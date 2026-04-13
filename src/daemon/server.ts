@@ -681,7 +681,8 @@ function handleClient(
 
         if (msg.noWait) {
           // Snapshot mode: return buffered output + status, don't attach
-          const buffered = shell.buffer.getContents(msg.tail);
+          // Pass snapshot=true so \r overwrites and ANSI escapes are resolved
+          const buffered = shell.buffer.getContents(msg.tail, true);
           send({ type: 'shell_attach_batch', shellId: msg.shellId, buffered, status: shell.status });
         } else {
           // Streaming mode: attach socket for live output

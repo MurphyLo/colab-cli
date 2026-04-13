@@ -13,9 +13,11 @@ import { KeepAlive } from '../runtime/keep-alive.js';
 import { ConnectionRefresher } from '../runtime/connection-refresher.js';
 import { getStoredServer } from '../runtime/storage.js';
 import { COLAB_API_DOMAIN, COLAB_GAPI_DOMAIN, CONFIG_DIR } from '../config.js';
-import type { ClientMessage, ServerMessage } from './protocol.js';
+import type { ClientMessage, ServerMessage, ShellStatus } from './protocol.js';
 import { encode } from './protocol.js';
 import { ExecutionStore } from './execution-store.js';
+import { TerminalConnection } from '../terminal/terminal-connection.js';
+import { TerminalBuffer } from '../terminal/terminal-buffer.js';
 
 const serverId = process.argv[2] as UUID;
 if (!serverId) {
@@ -49,6 +51,17 @@ interface ActiveExecution {
   /** Resolves when background auth polling is interrupted. */
   pendingAuthInterruptResolve?: () => void;
 }
+
+interface ActiveShell {
+  shellId: number;
+  connection: TerminalConnection;
+  buffer: TerminalBuffer;
+  attachedSocket?: net.Socket;
+  startedAt: Date;
+  status: ShellStatus;
+}
+
+const MAX_CONCURRENT_SHELLS = 10;
 
 const AUTH_POLL_INTERVAL_MS = 5_000;
 const AUTH_POLL_TIMEOUT_MS = 120_000;
@@ -108,6 +121,10 @@ async function main() {
 
   const store = new ExecutionStore(serverId);
   const execState: { activeExecution?: ActiveExecution } = {};
+  const shellState: {
+    shells: Map<number, ActiveShell>;
+    nextShellId: number;
+  } = { shells: new Map(), nextShellId: 1 };
 
   const propagateCredentialsOrThrow = async (authType: AuthType): Promise<void> => {
     const result = await colabClient.propagateCredentials(server.endpoint, {
@@ -304,7 +321,7 @@ async function main() {
 
   // Start Unix socket server early so CLI detects daemon quickly
   const socketServer = net.createServer((socket) =>
-    handleClient(socket, kernel, kernelReady, execState, store, runExecution),
+    handleClient(socket, kernel, kernelReady, execState, store, runExecution, shellState, refresher),
   );
 
   socketServer.on('error', (err: NodeJS.ErrnoException) => {
@@ -322,6 +339,10 @@ async function main() {
   // Shutdown handler
   const shutdown = () => {
     console.log('Shutting down daemon');
+    for (const shell of shellState.shells.values()) {
+      shell.connection.close();
+    }
+    shellState.shells.clear();
     kernel.close();
     keepAlive.stop();
     refresher.stop();
@@ -354,6 +375,11 @@ function handleClient(
   },
   store: ExecutionStore,
   runExecution: (execId: number, code: string) => Promise<void>,
+  shellState: {
+    shells: Map<number, ActiveShell>;
+    nextShellId: number;
+  },
+  refresher: ConnectionRefresher,
 ) {
   const send = (msg: ServerMessage) => {
     if (!socket.destroyed) socket.write(encode(msg));
@@ -543,6 +569,154 @@ function handleClient(
       case 'ping':
         send({ type: 'pong' });
         break;
+
+      // ── Shell session handlers ──
+
+      case 'shell_open': {
+        if (shellState.shells.size >= MAX_CONCURRENT_SHELLS) {
+          send({ type: 'shell_error', message: `Maximum concurrent shell sessions (${MAX_CONCURRENT_SHELLS}) reached` });
+          return;
+        }
+
+        const shellId = shellState.nextShellId++;
+        const buffer = new TerminalBuffer();
+
+        const connection = new TerminalConnection(
+          () => refresher.proxyUrl,
+          () => refresher.token,
+          {
+            onData: (data) => {
+              const shell = shellState.shells.get(shellId);
+              if (!shell) return;
+              shell.buffer.append(data);
+              if (shell.attachedSocket && !shell.attachedSocket.destroyed) {
+                shell.attachedSocket.write(encode({ type: 'shell_output', shellId, data }));
+              }
+            },
+            onOpen: () => {
+              console.log(`Shell ${shellId} connected`);
+            },
+            onClose: (_code, reason) => {
+              const shell = shellState.shells.get(shellId);
+              if (!shell) return;
+              shell.status = 'closed';
+              if (shell.attachedSocket && !shell.attachedSocket.destroyed) {
+                shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: reason || 'connection closed' }));
+              }
+              console.log(`Shell ${shellId} closed: ${reason}`);
+            },
+            onError: (err) => {
+              const shell = shellState.shells.get(shellId);
+              if (!shell) return;
+              shell.status = 'closed';
+              if (shell.attachedSocket && !shell.attachedSocket.destroyed) {
+                shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: err.message }));
+              }
+              console.error(`Shell ${shellId} error:`, err.message);
+            },
+          },
+        );
+
+        const shell: ActiveShell = {
+          shellId,
+          connection,
+          buffer,
+          startedAt: new Date(),
+          status: 'running',
+        };
+        shellState.shells.set(shellId, shell);
+
+        try {
+          await connection.connect();
+          // Send initial resize if dimensions provided
+          if (msg.cols && msg.rows) {
+            connection.sendResize(msg.cols, msg.rows);
+          }
+          send({ type: 'shell_opened', shellId });
+        } catch (err) {
+          shellState.shells.delete(shellId);
+          connection.close();
+          send({
+            type: 'shell_error',
+            message: `Failed to open shell: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+        break;
+      }
+
+      case 'shell_input': {
+        const shell = shellState.shells.get(msg.shellId);
+        if (!shell || shell.status === 'closed') {
+          send({ type: 'shell_error', message: `Shell ${msg.shellId} not found or closed` });
+          return;
+        }
+        shell.connection.send(msg.data);
+        break;
+      }
+
+      case 'shell_resize': {
+        const shell = shellState.shells.get(msg.shellId);
+        if (!shell || shell.status === 'closed') return;
+        shell.connection.sendResize(msg.cols, msg.rows);
+        break;
+      }
+
+      case 'shell_detach': {
+        const shell = shellState.shells.get(msg.shellId);
+        if (shell && shell.attachedSocket === socket) {
+          shell.attachedSocket = undefined;
+        }
+        break;
+      }
+
+      case 'shell_attach': {
+        const shell = shellState.shells.get(msg.shellId);
+        if (!shell) {
+          send({ type: 'shell_error', message: `Shell ${msg.shellId} not found` });
+          return;
+        }
+
+        if (msg.noWait) {
+          // Snapshot mode: return buffered output + status, don't attach
+          const buffered = shell.buffer.getContents(msg.tail);
+          send({ type: 'shell_attach_batch', shellId: msg.shellId, buffered, status: shell.status });
+        } else {
+          // Streaming mode: attach socket for live output
+          shell.attachedSocket = socket;
+          const buffered = shell.buffer.getContents();
+          send({ type: 'shell_attached', shellId: msg.shellId, buffered });
+          // Send resize to remote terminal if dimensions provided
+          if (msg.cols && msg.rows && shell.status === 'running') {
+            shell.connection.sendResize(msg.cols, msg.rows);
+          }
+          // If shell already closed, notify immediately
+          if (shell.status === 'closed') {
+            send({ type: 'shell_closed', shellId: msg.shellId, reason: 'session ended before attach' });
+          }
+        }
+        break;
+      }
+
+      case 'shell_list': {
+        const shells = Array.from(shellState.shells.values()).map((s) => ({
+          shellId: s.shellId,
+          status: s.status,
+          startedAt: s.startedAt.toISOString(),
+          attached: s.attachedSocket !== undefined && !s.attachedSocket.destroyed,
+        }));
+        send({ type: 'shell_list_result', shells });
+        break;
+      }
+
+      case 'shell_send': {
+        const shell = shellState.shells.get(msg.shellId);
+        if (!shell || shell.status === 'closed') {
+          send({ type: 'shell_error', message: `Shell ${msg.shellId} not found or closed` });
+          return;
+        }
+        shell.connection.send(msg.data);
+        break;
+      }
     }
   });
 
@@ -561,6 +735,12 @@ function handleClient(
       }
       // Detach the socket but keep the execution running in the daemon.
       active.attachedSocket = undefined;
+    }
+    // Detach this socket from any shell sessions (shells keep running)
+    for (const shell of shellState.shells.values()) {
+      if (shell.attachedSocket === socket) {
+        shell.attachedSocket = undefined;
+      }
     }
     rl.close();
   });

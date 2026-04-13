@@ -56,6 +56,10 @@ colab-cli/
 │   │   │   └── index.ts             # ProxiedJupyterClient 封装
 │   │   └── kernel-connection.ts     # WebSocket 内核连接 + Jupyter 线协议
 │   │
+│   ├── terminal/                    # 交互式终端（shell）
+│   │   ├── terminal-connection.ts   # WebSocket 连接 /colab/tty（移植自 colab-vscode）
+│   │   └── terminal-buffer.ts       # 有界环形缓冲区（attach 回放用）
+│   │
 │   ├── runtime/
 │   │   ├── runtime-manager.ts       # 生命周期管理（create/destroy/list + 守护进程调度）
 │   │   ├── keep-alive.ts            # 5 分钟心跳（由守护进程运行）
@@ -78,6 +82,7 @@ colab-cli/
 │   │   ├── auth.ts                  # login / status / logout
 │   │   ├── runtime.ts               # create / list / destroy / restart
 │   │   ├── exec.ts                  # 代码执行（通过守护进程）
+│   │   ├── shell.ts                 # 交互式终端：open / attach / list / send
 │   │   ├── fs.ts                    # 文件系统操作：upload / download
 │   │   ├── drive.ts                 # Drive 操作：login / logout / status / list / upload / download / mkdir / delete / move
 │   │   └── drive-mount.ts           # Drive 挂载操作：login / logout / mount / status
@@ -686,6 +691,127 @@ fs.ts: fsDownloadCommand()
 
 并发带来明显增益，但非线性（受 Colab 代理层和网络带宽限制）。
 
+### 4.10 交互式终端（Shell）
+
+在 runtime 上开启交互式终端。daemon 持有到 `/colab/tty` 的 WebSocket 长连接，CLI 客户端可 attach/detach，类似 tmux。
+
+**与 exec 的核心区别**：exec 走 Jupyter kernel 协议（结构化消息、单线程执行队列），shell 走原始 TTY 字节流（无状态 WebSocket、多会话并发上限 10 个）。两者共享 daemon IPC 架构，但消息类型和会话管理完全独立。
+
+#### 4.10.1 WebSocket 协议（`/colab/tty`）
+
+终端 WebSocket 端点由 Colab 代理提供，协议极简：
+
+```
+连接: wss://<proxyUrl>/colab/tty
+认证: X-Colab-Runtime-Proxy-Token header
+
+发送（JSON）:
+  {"data": "ls -la\n"}              # 输入数据
+  {"cols": 120, "rows": 40}         # 终端尺寸变更
+
+接收（JSON）:
+  {"data": "total 24\ndrwxr..."}    # 输出数据
+```
+
+端点是无状态的——断开 WebSocket 即丢失 shell 会话，无法重连。这是 daemon 代理层存在的核心原因。
+
+#### 4.10.2 Daemon 终端会话管理
+
+```
+ActiveShell {
+  shellId: number               # 自增 ID（独立于 exec 编号）
+  connection: TerminalConnection # WebSocket → /colab/tty
+  buffer: TerminalBuffer         # 环形缓冲区（100KB），attach 时回放
+  attachedSocket?: net.Socket    # 当前绑定的 CLI 客户端（可为空）
+  startedAt: Date
+  status: 'running' | 'closed'
+}
+```
+
+与 exec 的 `activeExecution` 不同，shell 支持多个并发会话（`Map<number, ActiveShell>`，上限 `MAX_CONCURRENT_SHELLS = 10`）。每个 shell 独立持有自己的 WebSocket 和 Buffer。
+
+**输出分发逻辑**：WebSocket 收到数据时，同时写入 `buffer.append()` 和 `attachedSocket`（如果有）。CLI detach 后输出仍持续缓冲，re-attach 时通过 buffer 回放。
+
+#### 4.10.3 数据流：前台交互模式
+
+```
+colab shell               Daemon                    Colab Runtime
+    |-- shell_open -------->|                           |
+    |                       |-- WS wss://.../colab/tty->|
+    |<-- shell_opened ------|                           |
+    |-- shell_attach ------>|  [attachedSocket=socket]  |
+    |<-- shell_attached ----|  [buffered=""]            |
+    |  [raw mode, live I/O] |                           |
+    |                       |                           |
+    |  [Ctrl+\]             |                           |
+    |-- shell_detach ------>|  [attachedSocket=null]    |
+    |  [exit]               |  [WS stays alive]        |
+    .                       |<-- {"data":"..."} ------->|
+    .                       |  [buffer.append()]        |
+                            .                           .
+colab shell attach 1       Daemon                    Colab Runtime
+    |-- shell_attach ------>|  [attachedSocket=new]    |
+    |<-- shell_attached ----|  [buffered=缓冲内容]      |
+    |  [write buffered]     |                           |
+    |  [raw mode, live I/O] |                           |
+```
+
+关键点：`shell_open` **不设** `attachedSocket`——调用方决定是立即 attach（前台 `colab shell`）还是不 attach（后台 `colab shell -b`）。
+
+#### 4.10.4 数据流：Agent 非阻塞模式
+
+Agent 的终端命令执行工具是阻塞的（如 Claude Code 的 Bash 工具），不能卡在交互式命令上。shell 提供完整的非阻塞 API：
+
+```
+colab shell -b             Daemon                    Colab Runtime
+    |-- shell_open -------->|-- WS connect ----------->|
+    |<-- shell_opened ------|   {shellId: 1}            |
+    |  [print "1", exit]    |   [no attachedSocket]     |
+
+colab shell send 1         Daemon                    Colab Runtime
+  --data "ls\n"            |                           |
+    |-- shell_send -------->|-- {"data":"ls\n"} ------>|
+    |  [exit immediately]   |<-- {"data":"file1..."} ---|
+                            |   [buffer.append()]       |
+
+colab shell attach 1       Daemon                    Colab Runtime
+  --no-wait                |                           |
+    |-- shell_attach ------>|                           |
+    |   {noWait: true}      |                           |
+    |<-- shell_attach_batch-|                           |
+    |   {buffered, status}  |                           |
+    |  [print, exit]        |                           |
+```
+
+#### 4.10.5 输入模型：为什么不需要 exec 的 `--stdin`/`--interrupt`
+
+exec 的输入是 Jupyter kernel 协议的特殊机制（`input_request` → `stdin_reply`），中断是独立 REST API（`POST /api/kernels/<id>/interrupt`）。
+
+terminal 的输入是原生 TTY 字节流——**所有键盘输入**（包括信号）都是 WebSocket `{"data": ...}` 中的原始字节：
+
+| 按键 | 字节 | 远端效果 |
+|------|------|---------|
+| Ctrl+C | `\x03` | 远端 TTY driver 解释为 SIGINT，中断前台进程 |
+| Ctrl+D | `\x04` | EOF，关闭 shell |
+| Ctrl+Z | `\x1a` | SIGTSTP，暂停前台进程 |
+| Ctrl+\ | `\x1c` | **CLI 本地拦截** → detach（唯一不透传的键） |
+
+因此 `colab shell send --signal INT` 只是 `--data "\x03"` 的易记别名，底层走同一代码路径。
+
+#### 4.10.6 源码溯源
+
+| colab-cli | colab-vscode 源文件 | 迁移说明 |
+|-----------|---------------------|---------|
+| `terminal/terminal-connection.ts` | `colab/terminal/colab-terminal-websocket.ts` (`ColabTerminalWebSocket`) | **移植**：保留核心逻辑——WebSocket 连接 `wss://<proxy>/colab/tty`、JSON 消息格式（`{"data":...}` / `{"cols":N,"rows":N}`）、pending message queue（CONNECTING 时入队，OPEN 后 flush）、disposed guard、readyState 检查。去掉：VS Code `EventEmitter`/`Disposable`/`Event` 接口 → 改为构造函数 `handlers` 回调；`ColabAssignedServer` → 改为 `getProxyUrl()`/`getToken()` getter（对齐 `KernelConnection` 模式）；`WebSocketClass` 注入（测试用）→ 直接 `import WebSocket`；`unexpected-response` handler（CLI 不需要 HTTP 响应体诊断）。新增：30s 连接超时、`connect()` 返回 `Promise<void>` 而非同步 void（daemon 需要 await 连接就绪）、`getProxyAgent()` 代理支持 |
+| `terminal/terminal-buffer.ts` | 无对应 | **全新**：colab-vscode 直接操作 VS Code Terminal 面板（输出即时渲染，无缓冲需求）。colab-cli 因 daemon detach/attach 模式需要缓冲历史输出，使用有界环形缓冲区（100KB 上限，chunk-level 淘汰，支持 `tailBytes` 截取） |
+| `commands/shell.ts` `runShellSession()` | `colab/terminal/colab-pseudoterminal.ts` (`ColabPseudoTerminal`) | **重写**：colab-vscode 通过 VS Code `Pseudoterminal` 接口桥接（`handleInput()` → WS send、`onDidWrite` ← WS receive、`setDimensions()` → WS resize）。colab-cli 因无 VS Code API，直接操作 `process.stdin`（raw mode）和 `process.stdout`：stdin `data` → `shellInput`、`SIGWINCH` → `shellResize`、`shellStream` → stdout write。新增 `Ctrl+\` detach 拦截（colab-vscode 终端面板关闭即断开，无 detach 概念） |
+| `commands/shell.ts` 命令结构 | `colab/commands/terminal.ts` (`openTerminal()`) | **重写**：colab-vscode 仅一个 `openTerminal()` 入口（创建 VS Code 终端面板）。colab-cli 拆分为 5 个子命令（`shell`/`attach`/`list`/`send` + 共享 `runShellSession`）以支持 daemon bg/attach 和 Agent 非阻塞模式 |
+| `daemon/server.ts` shell 会话管理 | 无对应 | **全新**：daemon 侧 `ActiveShell` 状态管理、多会话并发（Map + 上限 10）、attachedSocket 路由、buffer 缓冲、`shell_open`/`shell_attach`/`shell_detach`/`shell_list`/`shell_send` 消息处理 |
+| `daemon/protocol.ts` shell 消息 | 无对应 | **全新**：7 个 `ClientMessage` + 7 个 `ServerMessage` 变体，`ShellStatus`/`ShellListEntry` 类型。设计参考 exec 的 IPC 消息模式 |
+| `daemon/client.ts` shell 方法 | 无对应 | **全新**：`shellOpen`/`shellAttach`/`shellAttachSnapshot`/`shellList`/`shellSend`/`shellStream` 等方法，模式对齐 exec 的 `execBackground`/`execAttach`/`execAttachSnapshot`/`execList` |
+
+**总结**：从 colab-vscode 直接移植的是 WebSocket 协议层（`terminal-connection.ts` ← `colab-terminal-websocket.ts`），保留了连接建立、消息编解码、pending queue 等核心逻辑。VS Code 终端面板的 PTY 桥接层（`colab-pseudoterminal.ts`）被完全重写为 CLI raw mode 交互。daemon 侧的会话管理、缓冲、IPC 协议、bg/attach 模式均为 colab-cli 全新实现——colab-vscode 没有对应概念（VS Code 终端面板关闭即断开，无 detach/re-attach 支持）。
+
 ---
 
 ## 5. Google Drive 管理
@@ -866,7 +992,7 @@ colab-vscode 使用的 Zod 版本允许直接传 TS enum 对象给 `z.enum()`。
 - [x] `colab drive-mount`：自动 Drive 挂载（伪 GCE metadata server + DriveFS，一次授权后免浏览器）
 - [x] `runtime versions`：查看可用 runtime 版本及环境详情（Python、PyTorch 等），`runtime create --version` 指定版本
 - [x] Ctrl+C 中断 kernel 执行：exec 期间 Ctrl+C → `client.interrupt()` → daemon → `POST /api/kernels/<id>/interrupt` → kernel 发回 KeyboardInterrupt traceback → CLI 渲染后正常退出；第二次 Ctrl+C force exit
-- [ ] `colab terminal`（实验性）：在 runtime 上开启交互式 Shell。协议层已完全在 colab-vscode 中验证：WebSocket 连接 `wss://<proxy-url>/colab/tty`（需带 `X-Colab-Runtime-Proxy-Token` header），双向传输 JSON 消息——发送方向：`{ data: string }`（键盘输入）和 `{ cols: number, rows: number }`（窗口 resize）；接收方向：`{ data: string }`（终端输出）。CLI 侧需配合 `node-pty` 或直接操作 `process.stdin`/`stdout` raw mode 实现本地终端。参考：`colab-vscode/src/colab/terminal/colab-terminal-websocket.ts`（`ColabTerminalWebSocket`）、`colab-vscode/src/colab/terminal/colab-pseudoterminal.ts`（`ColabPseudoTerminal`）、`colab-vscode/src/colab/commands/terminal.ts`
+- [x] `colab shell`（实验性）：在 runtime 上开启交互式 Shell。从 colab-vscode 移植 WebSocket 协议层（`/colab/tty`），通过 daemon 代理实现 bg/attach 模式。支持人类交互（raw mode）和 Agent 非阻塞模式（`-b` / `attach --no-wait` / `send`）。`Ctrl+\` detach，daemon 持有 WebSocket；`shell attach` 回放缓冲输出并恢复实时流。`shell send --data/--signal` 向 detached shell 注入原始字节或信号
 - [ ] `runtime available` 补充不可用加速器信息：`GET /v1/user-info` 响应中已包含 `ineligibleAccelerators` 数组（与 `eligibleAccelerators` 并列），当前 `colab/api.ts` 的 Zod schema 已解析该字段但命令输出中未展示。可在 `runtime available` 输出末尾增加"因订阅等级不可用"列表，帮助用户了解升级路径。参考：`colab-vscode/src/colab/api.ts`（`UserInfo.ineligibleAccelerators: z.array(Accelerator)`）
 - [ ] runtime 信息缓存/展示优化
 - [ ] `daemon status` 命令：查看守护进程状态
@@ -1070,6 +1196,9 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 | `commands/drive-mount.ts` | 无对应 | **全新**：Drive 挂载子命令（login/logout/mount/status） |
 | `drive/mount-auth.ts` | 无对应 | **全新**：DriveFS OAuth 凭据管理（环境变量驱动） |
 | `drive/mount.ts` | 无对应 | **全新**：Drive 挂载执行（伪 GCE metadata server + DriveFS 启动脚本） |
+| `terminal/terminal-connection.ts` | `colab/terminal/colab-terminal-websocket.ts` | **移植**：去掉 VS Code `Disposable`/事件系统，保留 WebSocket 连接逻辑（`wss://<proxy>/colab/tty`）、pending message queue、JSON 消息格式（`{"data":...}` / `{"cols":N,"rows":N}`）。复用 `getProxyAgent()` 和 `COLAB_RUNTIME_PROXY_TOKEN_HEADER` |
+| `terminal/terminal-buffer.ts` | 无对应 | **全新**：有界环形缓冲区（默认 100KB），用于 daemon 侧缓存终端输出，支持 attach 时回放和 `--tail` 截取 |
+| `commands/shell.ts` | `colab/commands/terminal.ts` | **重写**：原始入口仅调用 `openTerminal()` 创建 VS Code 终端面板。CLI 版重新实现为 daemon IPC 模式：`shellCommand`（前台/后台）、`shellAttachCommand`（流式/快照）、`shellListCommand`、`shellSendCommand`、`runShellSession`（raw mode 交互循环） |
 
 ### 未实现功能的 colab-vscode 源码参考
 
@@ -1077,9 +1206,9 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 
 | 功能 | colab-vscode 源文件 | 关键类 / 方法 |
 |---|---|---|
-| 交互式终端 WebSocket | `colab/terminal/colab-terminal-websocket.ts` | `ColabTerminalWebSocket` → `wss://<proxy>/colab/tty` |
-| 终端 PTY 仿真（输入/resize/输出） | `colab/terminal/colab-pseudoterminal.ts` | `ColabPseudoTerminal` |
-| 终端命令入口 | `colab/commands/terminal.ts` | `openTerminal()` |
+| ~~交互式终端 WebSocket~~ | ~~`colab/terminal/colab-terminal-websocket.ts`~~ | ~~已实现~~：移植为 `terminal/terminal-connection.ts`，通过 daemon 代理 WebSocket 连接 |
+| ~~终端 PTY 仿真（输入/resize/输出）~~ | ~~`colab/terminal/colab-pseudoterminal.ts`~~ | ~~已实现~~：VS Code PTY 接口不适用于 CLI；改为 `commands/shell.ts` 的 `runShellSession()` 直接操作 `process.stdin` raw mode |
+| ~~终端命令入口~~ | ~~`colab/commands/terminal.ts`~~ | ~~已实现~~：`commands/shell.ts` 提供 `shell` / `shell attach` / `shell list` / `shell send` 子命令 |
 | ~~内核中断~~ | ~~`jupyter/client/generated/apis/KernelsApi.ts`~~ | ~~已实现~~：exec 期间 Ctrl+C → `client.interrupt()` → daemon → kernel interrupt |
 | `fs ls`（列目录内容） | `jupyter/contents/file-system.ts` | `ColabFileSystem.readDirectory()` |
 | `fs mkdir`（创建目录） | `jupyter/contents/file-system.ts` | `ColabFileSystem.createDirectory()` |

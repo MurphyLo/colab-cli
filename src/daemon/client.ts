@@ -3,7 +3,7 @@ import readline from 'readline';
 import { UUID } from 'crypto';
 import type { AuthType } from '../colab/api.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
-import type { ClientMessage, ServerMessage, ExecStatus, ExecListEntry } from './protocol.js';
+import type { ClientMessage, ServerMessage, ExecStatus, ExecListEntry, ShellStatus, ShellListEntry } from './protocol.js';
 import { encode } from './protocol.js';
 import { getSocketPath, isDaemonRunning, startDaemon } from './lifecycle.js';
 
@@ -155,6 +155,76 @@ export class DaemonClient {
 
   interrupt(): void {
     this.send({ type: 'interrupt' });
+  }
+
+  // ── Shell session methods ──
+
+  async shellOpen(cols: number, rows: number): Promise<number> {
+    this.send({ type: 'shell_open', cols, rows });
+    const msg = await this.nextMessage();
+    if (msg.type === 'shell_opened') return msg.shellId;
+    if (msg.type === 'shell_error') throw new Error(msg.message);
+    throw new Error(`Unexpected response: ${msg.type}`);
+  }
+
+  shellInput(shellId: number, data: string): void {
+    this.send({ type: 'shell_input', shellId, data });
+  }
+
+  shellResize(shellId: number, cols: number, rows: number): void {
+    this.send({ type: 'shell_resize', shellId, cols, rows });
+  }
+
+  shellDetach(shellId: number): void {
+    this.send({ type: 'shell_detach', shellId });
+  }
+
+  /** Streaming attach — returns buffered output, then use shellStream() for live data. */
+  async shellAttach(shellId: number, cols: number, rows: number): Promise<string> {
+    this.send({ type: 'shell_attach', shellId, cols, rows });
+    const msg = await this.nextMessage();
+    if (msg.type === 'shell_attached') return msg.buffered;
+    if (msg.type === 'shell_error') throw new Error(msg.message);
+    throw new Error(`Unexpected response: ${msg.type}`);
+  }
+
+  /** Snapshot attach — returns buffered output + status immediately, no live streaming. */
+  async shellAttachSnapshot(
+    shellId: number,
+    tail?: number,
+  ): Promise<{ buffered: string; status: ShellStatus }> {
+    this.send({
+      type: 'shell_attach',
+      shellId,
+      noWait: true,
+      ...(tail !== undefined ? { tail } : {}),
+    });
+    const msg = await this.nextMessage();
+    if (msg.type === 'shell_attach_batch') {
+      return { buffered: msg.buffered, status: msg.status };
+    }
+    if (msg.type === 'shell_error') throw new Error(msg.message);
+    throw new Error(`Unexpected response: ${msg.type}`);
+  }
+
+  async shellList(): Promise<ShellListEntry[]> {
+    this.send({ type: 'shell_list' });
+    const msg = await this.nextMessage();
+    if (msg.type === 'shell_list_result') return msg.shells;
+    throw new Error(`Unexpected response: ${msg.type}`);
+  }
+
+  shellSend(shellId: number, data: string): void {
+    this.send({ type: 'shell_send', shellId, data });
+  }
+
+  /** Consume live shell output messages until shell_closed. */
+  async *shellStream(): AsyncGenerator<ServerMessage> {
+    while (true) {
+      const msg = await this.nextMessage();
+      yield msg;
+      if (msg.type === 'shell_closed') return;
+    }
   }
 
   close(): void {

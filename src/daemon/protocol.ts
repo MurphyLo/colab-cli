@@ -12,7 +12,14 @@ export type ClientMessage =
   | { type: 'exec_attach'; execId: number; noWait?: boolean; tail?: number }
   | { type: 'exec_list' }
   | { type: 'exec_send'; execId: number; stdin?: string; interrupt?: boolean }
-  | { type: 'exec_clear'; execId?: number };
+  | { type: 'exec_clear'; execId?: number }
+  | { type: 'shell_open'; cols: number; rows: number }
+  | { type: 'shell_input'; shellId: number; data: string }
+  | { type: 'shell_resize'; shellId: number; cols: number; rows: number }
+  | { type: 'shell_detach'; shellId: number }
+  | { type: 'shell_attach'; shellId: number; cols?: number; rows?: number; noWait?: boolean; tail?: number }
+  | { type: 'shell_list' }
+  | { type: 'shell_send'; shellId: number; data: string };
 
 export type ServerMessage =
   | { type: 'ready' }
@@ -34,10 +41,26 @@ export type ServerMessage =
       pendingAuth?: { authType: AuthType; authUrl?: string };
     }
   | { type: 'exec_list_result'; executions: ExecListEntry[] }
-  | { type: 'exec_clear_result'; count: number };
+  | { type: 'exec_clear_result'; count: number }
+  | { type: 'shell_opened'; shellId: number }
+  | { type: 'shell_output'; shellId: number; data: string }
+  | { type: 'shell_closed'; shellId: number; reason: string }
+  | { type: 'shell_error'; message: string }
+  | { type: 'shell_attached'; shellId: number; buffered: string }
+  | { type: 'shell_attach_batch'; shellId: number; buffered: string; status: ShellStatus }
+  | { type: 'shell_list_result'; shells: ShellListEntry[] };
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg) + '\n';
+}
+
+export type ShellStatus = 'running' | 'closed';
+
+export interface ShellListEntry {
+  shellId: number;
+  status: ShellStatus;
+  startedAt: string;
+  attached: boolean;
 }
 
 export type { ExecStatus, ExecListEntry };

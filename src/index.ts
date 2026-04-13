@@ -26,6 +26,12 @@ import {
   execClearCommand,
 } from './commands/exec.js';
 import { fsUploadCommand, fsDownloadCommand } from './commands/fs.js';
+import {
+  shellCommand,
+  shellAttachCommand,
+  shellListCommand,
+  shellSendCommand,
+} from './commands/shell.js';
 import { usageCommand } from './commands/usage.js';
 import {
   driveLoginCommand,
@@ -290,6 +296,64 @@ execCmd
     await ensureLoggedIn();
     await execClearCommand(runtimeManager, id ? parseInt(id, 10) : undefined, {
       endpoint: opts.endpoint,
+    });
+  });
+
+// Shell commands (experimental)
+const shellCmd = program
+  .command('shell')
+  .description('open an interactive terminal on a runtime (experimental)')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .option('-b, --background', 'create shell in background, print shell ID and exit')
+  .action(async (opts) => {
+    await ensureLoggedIn();
+    await shellCommand(runtimeManager, {
+      endpoint: opts.endpoint,
+      background: opts.background,
+    });
+  });
+
+shellCmd
+  .command('attach <id>')
+  .description('attach to a shell session (replay buffer + stream live output)')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .option('--no-wait', 'print buffered output and exit immediately')
+  .option('--tail <n>', 'only last N bytes of output (implies --no-wait)', parseInt)
+  .action(async (id: string, opts) => {
+    await ensureLoggedIn();
+    await shellAttachCommand(runtimeManager, parseInt(id, 10), {
+      endpoint: opts.endpoint,
+      noWait: !opts.wait,
+      tail: opts.tail,
+    });
+  });
+
+shellCmd
+  .command('list')
+  .description('list active shell sessions')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .action(async (opts) => {
+    await ensureLoggedIn();
+    await shellListCommand(runtimeManager, {
+      endpoint: opts.endpoint,
+    });
+  });
+
+shellCmd
+  .command('send <id>')
+  .description('send raw data or signal to a shell session')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .option('-d, --data <data>', 'raw data to send (supports \\n, \\x03 escape sequences)')
+  .option(
+    '--signal <signal>',
+    'send signal: INT (Ctrl+C), EOF (Ctrl+D), TSTP (Ctrl+Z), QUIT (Ctrl+\\)',
+  )
+  .action(async (id: string, opts) => {
+    await ensureLoggedIn();
+    await shellSendCommand(runtimeManager, parseInt(id, 10), {
+      endpoint: opts.endpoint,
+      data: opts.data,
+      signal: opts.signal,
     });
   });
 

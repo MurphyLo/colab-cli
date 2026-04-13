@@ -604,6 +604,8 @@ function handleClient(
                 shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: reason || 'connection closed' }));
               }
               console.log(`Shell ${shellId} closed: ${reason}`);
+              // Remove closed shell after 5 minutes to free memory
+              setTimeout(() => shellState.shells.delete(shellId), 5 * 60 * 1000);
             },
             onError: (err) => {
               const shell = shellState.shells.get(shellId);
@@ -613,6 +615,7 @@ function handleClient(
                 shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: err.message }));
               }
               console.error(`Shell ${shellId} error:`, err.message);
+              setTimeout(() => shellState.shells.delete(shellId), 5 * 60 * 1000);
             },
           },
         );
@@ -682,6 +685,10 @@ function handleClient(
           send({ type: 'shell_attach_batch', shellId: msg.shellId, buffered, status: shell.status });
         } else {
           // Streaming mode: attach socket for live output
+          // Detach previous client if any
+          if (shell.attachedSocket && shell.attachedSocket !== socket && !shell.attachedSocket.destroyed) {
+            shell.attachedSocket.write(encode({ type: 'shell_closed', shellId: msg.shellId, reason: 'detached by another client' }));
+          }
           shell.attachedSocket = socket;
           const buffered = shell.buffer.getContents();
           send({ type: 'shell_attached', shellId: msg.shellId, buffered });
@@ -715,6 +722,7 @@ function handleClient(
           return;
         }
         shell.connection.send(msg.data);
+        send({ type: 'shell_send_ack', shellId: msg.shellId });
         break;
       }
     }

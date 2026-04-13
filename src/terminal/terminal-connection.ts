@@ -71,6 +71,11 @@ export class TerminalConnection {
       });
 
       const timeout = setTimeout(() => {
+        if (this.ws) {
+          this.ws.removeAllListeners();
+          this.ws.close();
+          this.ws = undefined;
+        }
         reject(new Error('Terminal WebSocket connection timed out'));
       }, 30_000);
 

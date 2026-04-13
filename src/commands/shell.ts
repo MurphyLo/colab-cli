@@ -209,7 +209,7 @@ export async function shellSendCommand(
   await client.connect(server.id);
 
   try {
-    client.shellSend(shellId, data);
+    await client.shellSend(shellId, data);
   } finally {
     client.close();
   }
@@ -236,7 +236,10 @@ async function runShellSession(client: DaemonClient, shellId: number): Promise<v
 
   const DETACH_CHAR = '\x1c'; // Ctrl+\
 
+  let cleanedUp = false;
   const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
     stdin.removeListener('data', onData);
     process.removeListener('SIGWINCH', onResize);
     stdin.setRawMode(wasRaw);

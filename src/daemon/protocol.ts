@@ -48,7 +48,8 @@ export type ServerMessage =
   | { type: 'shell_error'; message: string }
   | { type: 'shell_attached'; shellId: number; buffered: string }
   | { type: 'shell_attach_batch'; shellId: number; buffered: string; status: ShellStatus }
-  | { type: 'shell_list_result'; shells: ShellListEntry[] };
+  | { type: 'shell_list_result'; shells: ShellListEntry[] }
+  | { type: 'shell_send_ack'; shellId: number };
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg) + '\n';

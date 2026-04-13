@@ -214,8 +214,11 @@ export class DaemonClient {
     throw new Error(`Unexpected response: ${msg.type}`);
   }
 
-  shellSend(shellId: number, data: string): void {
+  async shellSend(shellId: number, data: string): Promise<void> {
     this.send({ type: 'shell_send', shellId, data });
+    const msg = await this.nextMessage();
+    if (msg.type === 'shell_error') throw new Error(msg.message);
+    if (msg.type !== 'shell_send_ack') throw new Error(`Unexpected response: ${msg.type}`);
   }
 
   /** Consume live shell output messages until shell_closed. */

@@ -46,7 +46,7 @@ Most commands accept a global `--json` flag (`exec` excluded). When set, spinner
 
 ```bash
 # Extract a folder ID reliably
-FOLDER_ID=$(colab drive mkdir models -p "$PARENT" --json | jq -r '.folderId')
+FOLDER_ID=$(colab drive mkdir models --parent "$PARENT" --json | jq -r '.folderId')
 
 # Extract a runtime endpoint
 ENDPOINT=$(colab runtime create --accelerator T4 --shape standard --json | jq -r '.endpoint')
@@ -77,14 +77,14 @@ colab runtime available
 colab runtime versions
 colab runtime create --accelerator CPU
 colab runtime create --accelerator T4 --shape standard
-colab runtime create --accelerator T4 -v 2025.10
+colab runtime create --accelerator T4 --runtime-version 2025.10
 colab runtime create --accelerator L4 --shape high-ram
 colab runtime list
 colab runtime restart --endpoint <endpoint>
 colab runtime destroy --endpoint <endpoint>
 ```
 
-Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--version` with `create` to pin a specific version. Use `list` whenever endpoint selection matters.
+Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `list` whenever endpoint selection matters.
 
 ### Usage
 
@@ -103,24 +103,24 @@ print('value:', x)
 for i in range(3):
     print('row', i)
 "
-colab exec -f script.py
-colab exec -e <endpoint> "import torch; print(torch.cuda.is_available())"
-colab exec -o ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.show()"
+colab exec --file script.py
+colab exec --endpoint <endpoint> "import torch; print(torch.cuda.is_available())"
+colab exec --output-dir ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,3]); plt.show()"
 ```
 
 - Use inline code for short snippets.
-- Use `-f` for multi-line scripts or when shell quoting would be fragile.
-- Use `-o <dir>` to save image outputs (PNG, JPEG, GIF, SVG) to a specific directory. Without `-o`, images are saved automatically to `~/.config/colab-cli/outputs/<serverId>/`. File names follow `exec<id>-output-<n>.<ext>` for cross-execution isolation. The saved file path is printed to the terminal.
+- Use `--file` for multi-line scripts or when shell quoting would be fragile.
+- Use `--output-dir <dir>` to save image outputs (PNG, JPEG, GIF, SVG) to a specific directory. Without `--output-dir`, images are saved automatically to `~/.config/colab-cli/outputs/<serverId>/`. File names follow `exec<id>-output-<n>.<ext>` for cross-execution isolation. The saved file path is printed to the terminal.
 - **Interactive input**: Code using `input()` or `getpass.getpass()` works transparently — prompts are forwarded to the terminal, user input is sent back to the kernel, and execution continues. Password prompts (`getpass`) suppress character echo automatically. In non-TTY contexts (e.g., piped stdin), an empty string is returned immediately.
 - **Ctrl+C interrupt**: Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel (equivalent to the stop button in the Colab UI). The kernel raises `KeyboardInterrupt`, the traceback is printed, and the CLI exits with a non-zero status. A second Ctrl+C force-exits the CLI immediately. This also works during `input()` prompts — Ctrl+C interrupts the kernel instead of sending input.
 - If the executed Python code raises an exception, `colab exec` exits non-zero.
 - If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
-- **Background execution** (`--bg`): The CLI returns immediately with an exec ID (printed to stdout) while the kernel continues executing. Use `exec attach`, `exec list`, and `exec send` to monitor and interact with background executions. If background code triggers browser auth, the daemon stores the auth URL, snapshot/streaming attach commands print it, and the daemon retries credential propagation automatically every 5 seconds until the browser flow completes or times out. Only one execution (foreground or background) can run at a time — the Jupyter kernel is serial.
+- **Background execution** (`--background`): The CLI returns immediately with an exec ID (printed to stdout) while the kernel continues executing. Use `exec attach`, `exec list`, and `exec send` to monitor and interact with background executions. If background code triggers browser auth, the daemon stores the auth URL, snapshot/streaming attach commands print it, and the daemon retries credential propagation automatically every 5 seconds until the browser flow completes or times out. Only one execution (foreground or background) can run at a time — the Jupyter kernel is serial.
 
 ### Background Execution Management
 
 ```bash
-colab exec --bg "import time; [print(i) or time.sleep(1) for i in range(60)]"
+colab exec --background "import time; [print(i) or time.sleep(1) for i in range(60)]"
 colab exec list
 colab exec attach 1 --no-wait
 colab exec attach 1 --tail 20
@@ -131,7 +131,7 @@ colab exec clear
 colab exec clear 1
 ```
 
-- Use `--bg` to run long tasks without blocking the CLI (exec ID printed to stdout).
+- Use `--background` to run long tasks without blocking the CLI (exec ID printed to stdout).
 - Use `exec list` to see all executions and their status (`running`, `done`, `error`, `crashed`, `input`, or `auth`) and elapsed time.
 - Use `exec attach <id> --no-wait` to get a snapshot of buffered output and exit immediately. If the execution is paused on browser auth, the stored OAuth URL is printed in that snapshot.
 - Use `exec attach <id> --tail <n>` to get only the last N outputs (implies `--no-wait`, so `--no-wait` can be omitted).
@@ -145,9 +145,9 @@ colab exec clear 1
 
 ```bash
 colab fs upload ./data.csv
-colab fs upload ./model.bin -r content/models/model.bin
+colab fs upload ./model.bin --remote-path content/models/model.bin
 colab fs download content/results.json
-colab fs download content/output.bin -o ./local-output.bin
+colab fs download content/output.bin --output ./local-output.bin
 ```
 
 - Use `colab fs` for files moving directly between local disk and the runtime filesystem, usually under `content/...`.
@@ -159,9 +159,9 @@ colab fs download content/output.bin -o ./local-output.bin
 ```bash
 colab drive list
 colab drive list <folder-id>
-colab drive upload ./dataset.zip -p <folder-id>
-colab drive download <file-id> -o ./dataset.zip
-colab drive mkdir "checkpoints" -p <folder-id>
+colab drive upload ./dataset.zip --parent <folder-id>
+colab drive download <file-id> --output ./dataset.zip
+colab drive mkdir "checkpoints" --parent <folder-id>
 colab drive move <item-id> --to <folder-id>
 colab drive delete <file-id>
 colab drive delete <file-id> --permanent
@@ -178,7 +178,7 @@ colab drive delete <file-id> --permanent
 ```bash
 colab drive-mount login                  # One-time: authorize (opens browser)
 colab drive-mount                        # Mount Drive on the latest runtime
-colab drive-mount -e <endpoint>          # Mount on a specific runtime
+colab drive-mount --endpoint <endpoint>  # Mount on a specific runtime
 colab drive-mount status                 # Check authorization status
 ```
 

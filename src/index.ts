@@ -221,10 +221,10 @@ const execCmd = program
   .option('-f, --file <path>', 'execute code from a file')
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .option('-o, --output-dir <path>', 'save image outputs (png, jpeg, gif, svg) to this directory')
-  .option('--bg', 'run in background and return exec ID immediately')
+  .option('-b, --background', 'run in background and return exec ID immediately')
   .action(async (code, opts) => {
     await ensureLoggedIn();
-    if (opts.bg) {
+    if (opts.background) {
       await execBgCommand(runtimeManager, {
         code,
         file: opts.file,

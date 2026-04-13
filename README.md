@@ -226,10 +226,10 @@ detect the pre-mounted filesystem and return immediately without any auth prompt
 
 ### Background Execution
 
-Run code in the background — the CLI returns immediately with an exec ID while the kernel continues executing:
+Run code in the background with `-b` / `--background` — the CLI returns immediately with an exec ID while the kernel continues executing:
 
 ```bash
-colab exec --bg "import time; [print(i) or time.sleep(1) for i in range(60)]"
+colab exec -b "import time; [print(i) or time.sleep(1) for i in range(60)]"
 # 1     ← exec ID printed to stdout
 ```
 

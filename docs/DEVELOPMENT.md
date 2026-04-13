@@ -248,7 +248,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 
 **通信流程（后台执行）**：
 
-1. CLI 发送 `exec` 请求（带 `background: true`）
+1. 用户执行 `colab exec -b` / `colab exec --background`，CLI 发送 `exec` 请求（带 `background: true`）
 2. 守护进程发送 `exec_started`（含 execId），CLI 立即退出
 3. 执行继续在守护进程中进行，输出缓存在 ExecutionStore
 4. 后续 CLI 可通过 `exec_attach`（流式重放 + 续流）或 `exec_attach`（`noWait: true`，快照模式）获取输出

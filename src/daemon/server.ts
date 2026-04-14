@@ -769,6 +769,7 @@ function handleClient(
         try {
           const session = await ForwardSession.open(
             id,
+            msg.localHost,
             msg.localPort,
             msg.remotePort,
             colabClient,
@@ -778,12 +779,13 @@ function handleClient(
           send({
             type: 'port_forward_created',
             id,
+            localHost: session.localHost,
             localPort: session.localPort,
             remotePort: session.remotePort,
             proxyUrl: session.proxyUrl,
           });
           console.log(
-            `Port forward ${id}: local ${session.localPort} → remote ${session.remotePort}`,
+            `Port forward ${id}: ${session.localHost}:${session.localPort} → remote ${session.remotePort}`,
           );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -795,6 +797,7 @@ function handleClient(
       case 'port_forward_list': {
         const sessions = Array.from(forwardState.sessions.values()).map((s) => ({
           id: s.id,
+          localHost: s.localHost,
           localPort: s.localPort,
           remotePort: s.remotePort,
           startedAt: s.startedAt.toISOString(),

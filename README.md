@@ -341,18 +341,21 @@ so `shell list` and snapshot attach can still inspect the final buffered output.
 
 ## Port Forwarding
 
-Forward a port on the runtime to your local machine so you can reach web services (Gradio, Streamlit, TensorBoard, Flask, …) at `http://localhost:<port>`. The forward is an L7 HTTP/WebSocket reverse proxy backed by Colab's edge infrastructure — no ngrok, no share link, no runtime-side agent.
+Forward a port on the runtime to your local machine so you can reach web services (Gradio, Streamlit, TensorBoard, Flask, …) through a local bind address. The forward is an L7 HTTP/WebSocket reverse proxy backed by Colab's edge infrastructure — no ngrok, no share link, no runtime-side agent.
 
 Traffic is tunneled through `https://<PORT>-<endpoint>.colab.dev` with a signed per-port proxy token (automatically refreshed before expiry). Each forward runs in the daemon; the CLI exits as soon as the listener is bound.
 
 Start a service in the runtime, then:
 
 ```bash
-# same port on both sides
+# same port on both sides (binds 127.0.0.1 by default)
 colab port-forward create 7860
 
 # custom local port (when 7860 is already in use locally)
 colab port-forward create 18080:7860
+
+# explicit bind host, local port, and remote port
+colab port-forward create 0.0.0.0:18080:7860
 
 # list active forwards
 colab port-forward list
@@ -362,7 +365,7 @@ colab port-forward close 1
 colab port-forward close --all
 ```
 
-`pf` is a shorter alias for `port-forward`.
+`pf` is a shorter alias for `port-forward`. The `create` spec accepts `REMOTE`, `LOCAL:REMOTE`, or `HOST:LOCAL:REMOTE`; the 1-part and 2-part forms default the bind host to `127.0.0.1`.
 
 Forwards live as long as the daemon. If the runtime is destroyed (or the daemon is killed) all forwards are cleared and must be recreated.
 

@@ -249,14 +249,22 @@ export class DaemonClient {
   // ── Port-forward methods ──
 
   async portForwardCreate(
+    localHost: string,
     localPort: number,
     remotePort: number,
-  ): Promise<{ id: number; localPort: number; remotePort: number; proxyUrl: string }> {
-    this.send({ type: 'port_forward_create', localPort, remotePort });
+  ): Promise<{
+    id: number;
+    localHost: string;
+    localPort: number;
+    remotePort: number;
+    proxyUrl: string;
+  }> {
+    this.send({ type: 'port_forward_create', localHost, localPort, remotePort });
     const msg = await this.nextMessage();
     if (msg.type === 'port_forward_created') {
       return {
         id: msg.id,
+        localHost: msg.localHost,
         localPort: msg.localPort,
         remotePort: msg.remotePort,
         proxyUrl: msg.proxyUrl,

@@ -20,7 +20,12 @@ export type ClientMessage =
   | { type: 'shell_attach'; shellId: number; cols?: number; rows?: number; noWait?: boolean; tail?: number }
   | { type: 'shell_list' }
   | { type: 'shell_send'; shellId: number; data: string }
-  | { type: 'port_forward_create'; localPort: number; remotePort: number }
+  | {
+      type: 'port_forward_create';
+      localHost: string;
+      localPort: number;
+      remotePort: number;
+    }
   | { type: 'port_forward_list' }
   | { type: 'port_forward_close'; id?: number; all?: boolean };
 
@@ -56,6 +61,7 @@ export type ServerMessage =
   | {
       type: 'port_forward_created';
       id: number;
+      localHost: string;
       localPort: number;
       remotePort: number;
       proxyUrl: string;
@@ -79,6 +85,7 @@ export interface ShellListEntry {
 
 export interface PortForwardListEntry {
   id: number;
+  localHost: string;
   localPort: number;
   remotePort: number;
   startedAt: string;

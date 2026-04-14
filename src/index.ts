@@ -366,12 +366,12 @@ shellCmd
 const portForward = program
   .command('port-forward')
   .alias('pf')
-  .description('forward a runtime port to localhost (HTTP/WebSocket)');
+  .description('forward a runtime port to a local bind address (HTTP/WebSocket)');
 
 portForward
   .command('create <spec>')
   .description(
-    'create a forward; spec is PORT (same on both sides) or LOCAL:REMOTE',
+    'create a forward; spec is REMOTE, LOCAL:REMOTE, or HOST:LOCAL:REMOTE',
   )
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .action(async (spec: string, opts) => {

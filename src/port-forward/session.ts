@@ -8,6 +8,7 @@ export class ForwardSession {
 
   private constructor(
     readonly id: number,
+    readonly localHost: string,
     readonly localPort: number,
     readonly remotePort: number,
     private readonly refresher: PortTokenRefresher,
@@ -20,6 +21,7 @@ export class ForwardSession {
 
   static async open(
     id: number,
+    localHost: string,
     localPort: number,
     remotePort: number,
     colabClient: ColabClient,
@@ -41,14 +43,14 @@ export class ForwardSession {
         };
         server.once('error', onError);
         server.once('listening', onListening);
-        server.listen(localPort, '127.0.0.1');
+        server.listen(localPort, localHost);
       });
     } catch (err) {
       refresher.stop();
       throw err;
     }
 
-    return new ForwardSession(id, localPort, remotePort, refresher, server);
+    return new ForwardSession(id, localHost, localPort, remotePort, refresher, server);
   }
 
   async close(): Promise<void> {

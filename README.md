@@ -339,6 +339,35 @@ If another client attaches to the same shell, the previous client is detached
 and notified. Closed shell sessions remain queryable for a short grace period
 so `shell list` and snapshot attach can still inspect the final buffered output.
 
+## Port Forwarding
+
+Forward a port on the runtime to your local machine so you can reach web services (Gradio, Streamlit, TensorBoard, Flask, …) at `http://localhost:<port>`. The forward is an L7 HTTP/WebSocket reverse proxy backed by Colab's edge infrastructure — no ngrok, no share link, no runtime-side agent.
+
+Traffic is tunneled through `https://<PORT>-<endpoint>.colab.dev` with a signed per-port proxy token (automatically refreshed before expiry). Each forward runs in the daemon; the CLI exits as soon as the listener is bound.
+
+Start a service in the runtime, then:
+
+```bash
+# same port on both sides
+colab port-forward create 7860
+
+# custom local port (when 7860 is already in use locally)
+colab port-forward create 18080:7860
+
+# list active forwards
+colab port-forward list
+
+# close by ID, or close all
+colab port-forward close 1
+colab port-forward close --all
+```
+
+`pf` is a shorter alias for `port-forward`.
+
+Forwards live as long as the daemon. If the runtime is destroyed (or the daemon is killed) all forwards are cleared and must be recreated.
+
+**Scope**: HTTP and WebSocket only. Raw TCP protocols (PostgreSQL wire, Redis RESP, SSH, gRPC-over-HTTP2, etc.) aren't supported — for those, use SSH-style tunnels or a VPN. Typical ML/data-app uses (Gradio, Streamlit, Flask/FastAPI, TensorBoard, notebooks, dev servers) all work.
+
 ## File Transfer
 
 Upload and download files between the local filesystem and the runtime's `/content` directory. Files are transferred via the Jupyter Contents API with automatic chunked transfer for large files.
@@ -563,6 +592,9 @@ colab shell [-e <endpoint>] [-b]
 colab shell attach <id> [-e <endpoint>] [--no-wait] [--tail <bytes>]
 colab shell list [-e <endpoint>]
 colab shell send <id> [-e <endpoint>] [--data <data> | --signal <signal>]
+colab port-forward create <spec> [-e <endpoint>]
+colab port-forward list [-e <endpoint>]
+colab port-forward close [id] [-e <endpoint>] [--all]
 colab fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 colab fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 colab drive login

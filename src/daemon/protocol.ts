@@ -19,7 +19,10 @@ export type ClientMessage =
   | { type: 'shell_detach'; shellId: number }
   | { type: 'shell_attach'; shellId: number; cols?: number; rows?: number; noWait?: boolean; tail?: number }
   | { type: 'shell_list' }
-  | { type: 'shell_send'; shellId: number; data: string };
+  | { type: 'shell_send'; shellId: number; data: string }
+  | { type: 'port_forward_create'; localPort: number; remotePort: number }
+  | { type: 'port_forward_list' }
+  | { type: 'port_forward_close'; id?: number; all?: boolean };
 
 export type ServerMessage =
   | { type: 'ready' }
@@ -49,7 +52,17 @@ export type ServerMessage =
   | { type: 'shell_attached'; shellId: number; buffered: string }
   | { type: 'shell_attach_batch'; shellId: number; buffered: string; status: ShellStatus }
   | { type: 'shell_list_result'; shells: ShellListEntry[] }
-  | { type: 'shell_send_ack'; shellId: number };
+  | { type: 'shell_send_ack'; shellId: number }
+  | {
+      type: 'port_forward_created';
+      id: number;
+      localPort: number;
+      remotePort: number;
+      proxyUrl: string;
+    }
+  | { type: 'port_forward_list_result'; sessions: PortForwardListEntry[] }
+  | { type: 'port_forward_closed'; ids: number[] }
+  | { type: 'port_forward_error'; message: string };
 
 export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg) + '\n';
@@ -62,6 +75,14 @@ export interface ShellListEntry {
   status: ShellStatus;
   startedAt: string;
   attached: boolean;
+}
+
+export interface PortForwardListEntry {
+  id: number;
+  localPort: number;
+  remotePort: number;
+  startedAt: string;
+  proxyUrl: string;
 }
 
 export type { ExecStatus, ExecListEntry };

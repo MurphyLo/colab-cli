@@ -32,6 +32,11 @@ import {
   shellListCommand,
   shellSendCommand,
 } from './commands/shell.js';
+import {
+  portForwardCreateCommand,
+  portForwardListCommand,
+  portForwardCloseCommand,
+} from './commands/port-forward.js';
 import { usageCommand } from './commands/usage.js';
 import {
   driveLoginCommand,
@@ -354,6 +359,45 @@ shellCmd
       endpoint: opts.endpoint,
       data: opts.data,
       signal: opts.signal,
+    });
+  });
+
+// Port forwarding commands
+const portForward = program
+  .command('port-forward')
+  .alias('pf')
+  .description('forward a runtime port to localhost (HTTP/WebSocket)');
+
+portForward
+  .command('create <spec>')
+  .description(
+    'create a forward; spec is PORT (same on both sides) or LOCAL:REMOTE',
+  )
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .action(async (spec: string, opts) => {
+    await ensureLoggedIn();
+    await portForwardCreateCommand(runtimeManager, spec, { endpoint: opts.endpoint });
+  });
+
+portForward
+  .command('list')
+  .description('list active port forwards')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .action(async (opts) => {
+    await ensureLoggedIn();
+    await portForwardListCommand(runtimeManager, { endpoint: opts.endpoint });
+  });
+
+portForward
+  .command('close [id]')
+  .description('close a port forward by ID, or all with --all')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .option('--all', 'close all port forwards')
+  .action(async (id: string | undefined, opts) => {
+    await ensureLoggedIn();
+    await portForwardCloseCommand(runtimeManager, id, {
+      endpoint: opts.endpoint,
+      all: opts.all,
     });
   });
 

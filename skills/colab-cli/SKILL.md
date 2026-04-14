@@ -164,6 +164,25 @@ colab shell send 1 --signal INT
 - In a foreground shell session, `Ctrl+\` is intercepted locally to detach the CLI without sending the byte to the remote shell.
 - Closed shell sessions remain visible briefly so users can inspect final buffered output before daemon cleanup evicts them.
 
+### Port Forwarding
+
+```bash
+colab port-forward create 7860
+colab port-forward create 18080:7860
+colab port-forward list
+colab port-forward close 1
+colab port-forward close --all
+```
+
+- Use `colab port-forward create <port>` to forward a runtime port to the same local port; use `LOCAL:REMOTE` form when the local port is already in use.
+- `pf` is a shorter alias for `port-forward`.
+- Forwards are HTTP/WebSocket only (L7 reverse proxy through Colab edge infrastructure). Raw TCP protocols (PostgreSQL, Redis, SSH, gRPC) are not supported.
+- The forward runs inside the daemon; `create` returns immediately after the local listener is bound.
+- Forwards live as long as the daemon. If the runtime is destroyed or the daemon is killed, all forwards are cleared and must be recreated.
+- Use `colab port-forward list` to see active forwards with their IDs, local/remote ports, and proxy URLs.
+- Use `colab port-forward close <id>` or `--all` to tear down forwards.
+- Typical use cases: Gradio, Streamlit, Flask/FastAPI, TensorBoard, dev servers.
+
 ### Runtime Filesystem Transfer
 
 ```bash

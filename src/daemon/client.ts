@@ -3,7 +3,15 @@ import readline from 'readline';
 import { UUID } from 'crypto';
 import type { AuthType } from '../colab/api.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
-import type { ClientMessage, ServerMessage, ExecStatus, ExecListEntry, ShellStatus, ShellListEntry } from './protocol.js';
+import type {
+  ClientMessage,
+  ServerMessage,
+  ExecStatus,
+  ExecListEntry,
+  ShellStatus,
+  ShellListEntry,
+  PortForwardListEntry,
+} from './protocol.js';
 import { encode } from './protocol.js';
 import { getSocketPath, isDaemonRunning, startDaemon } from './lifecycle.js';
 
@@ -236,6 +244,45 @@ export class DaemonClient {
     this.socket = undefined;
     this.rl = undefined;
     this.closed = true;
+  }
+
+  // ── Port-forward methods ──
+
+  async portForwardCreate(
+    localPort: number,
+    remotePort: number,
+  ): Promise<{ id: number; localPort: number; remotePort: number; proxyUrl: string }> {
+    this.send({ type: 'port_forward_create', localPort, remotePort });
+    const msg = await this.nextMessage();
+    if (msg.type === 'port_forward_created') {
+      return {
+        id: msg.id,
+        localPort: msg.localPort,
+        remotePort: msg.remotePort,
+        proxyUrl: msg.proxyUrl,
+      };
+    }
+    if (msg.type === 'port_forward_error') throw new Error(msg.message);
+    throw new Error(`Unexpected response: ${msg.type}`);
+  }
+
+  async portForwardList(): Promise<PortForwardListEntry[]> {
+    this.send({ type: 'port_forward_list' });
+    const msg = await this.nextMessage();
+    if (msg.type === 'port_forward_list_result') return msg.sessions;
+    throw new Error(`Unexpected response: ${msg.type}`);
+  }
+
+  async portForwardClose(opts: { id?: number; all?: boolean }): Promise<number[]> {
+    this.send({
+      type: 'port_forward_close',
+      ...(opts.id !== undefined ? { id: opts.id } : {}),
+      ...(opts.all ? { all: true } : {}),
+    });
+    const msg = await this.nextMessage();
+    if (msg.type === 'port_forward_closed') return msg.ids;
+    if (msg.type === 'port_forward_error') throw new Error(msg.message);
+    throw new Error(`Unexpected response: ${msg.type}`);
   }
 
   private async *consumeExecMessages(

@@ -143,10 +143,14 @@ export class ColabClient {
     });
   }
 
-  async refreshConnection(endpoint: string, signal?: AbortSignal): Promise<RuntimeProxyToken> {
+  async refreshConnection(
+    endpoint: string,
+    port: number = 8080,
+    signal?: AbortSignal,
+  ): Promise<RuntimeProxyToken> {
     const url = new URL('v1/runtime-proxy-token', this.colabGapiDomain);
     url.searchParams.set('endpoint', endpoint);
-    url.searchParams.set('port', '8080');
+    url.searchParams.set('port', String(port));
     return await this.issueRequest(url, { method: 'GET', signal }, RuntimeProxyTokenSchema);
   }
 

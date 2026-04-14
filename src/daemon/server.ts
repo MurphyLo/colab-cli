@@ -18,6 +18,7 @@ import { encode } from './protocol.js';
 import { ExecutionStore } from './execution-store.js';
 import { TerminalConnection } from '../terminal/terminal-connection.js';
 import { TerminalBuffer } from '../terminal/terminal-buffer.js';
+import { ForwardSession } from '../port-forward/session.js';
 
 const serverId = process.argv[2] as UUID;
 if (!serverId) {
@@ -62,6 +63,7 @@ interface ActiveShell {
 }
 
 const MAX_CONCURRENT_SHELLS = 10;
+const MAX_CONCURRENT_PORT_FORWARDS = 20;
 
 const AUTH_POLL_INTERVAL_MS = 5_000;
 const AUTH_POLL_TIMEOUT_MS = 120_000;
@@ -125,6 +127,10 @@ async function main() {
     shells: Map<number, ActiveShell>;
     nextShellId: number;
   } = { shells: new Map(), nextShellId: 1 };
+  const forwardState: {
+    sessions: Map<number, ForwardSession>;
+    nextId: number;
+  } = { sessions: new Map(), nextId: 1 };
 
   const propagateCredentialsOrThrow = async (authType: AuthType): Promise<void> => {
     const result = await colabClient.propagateCredentials(server.endpoint, {
@@ -321,7 +327,19 @@ async function main() {
 
   // Start Unix socket server early so CLI detects daemon quickly
   const socketServer = net.createServer((socket) =>
-    handleClient(socket, kernel, kernelReady, execState, store, runExecution, shellState, refresher),
+    handleClient(
+      socket,
+      kernel,
+      kernelReady,
+      execState,
+      store,
+      runExecution,
+      shellState,
+      refresher,
+      forwardState,
+      colabClient,
+      server.endpoint,
+    ),
   );
 
   socketServer.on('error', (err: NodeJS.ErrnoException) => {
@@ -343,6 +361,10 @@ async function main() {
       shell.connection.close();
     }
     shellState.shells.clear();
+    for (const session of forwardState.sessions.values()) {
+      session.close().catch(() => {});
+    }
+    forwardState.sessions.clear();
     kernel.close();
     keepAlive.stop();
     refresher.stop();
@@ -380,6 +402,12 @@ function handleClient(
     nextShellId: number;
   },
   refresher: ConnectionRefresher,
+  forwardState: {
+    sessions: Map<number, ForwardSession>;
+    nextId: number;
+  },
+  colabClient: ColabClient,
+  endpoint: string,
 ) {
   const send = (msg: ServerMessage) => {
     if (!socket.destroyed) socket.write(encode(msg));
@@ -724,6 +752,84 @@ function handleClient(
         }
         shell.connection.send(msg.data);
         send({ type: 'shell_send_ack', shellId: msg.shellId });
+        break;
+      }
+
+      // ── Port-forward handlers ──
+
+      case 'port_forward_create': {
+        if (forwardState.sessions.size >= MAX_CONCURRENT_PORT_FORWARDS) {
+          send({
+            type: 'port_forward_error',
+            message: `Maximum concurrent port forwards (${MAX_CONCURRENT_PORT_FORWARDS}) reached`,
+          });
+          return;
+        }
+        const id = forwardState.nextId++;
+        try {
+          const session = await ForwardSession.open(
+            id,
+            msg.localPort,
+            msg.remotePort,
+            colabClient,
+            endpoint,
+          );
+          forwardState.sessions.set(id, session);
+          send({
+            type: 'port_forward_created',
+            id,
+            localPort: session.localPort,
+            remotePort: session.remotePort,
+            proxyUrl: session.proxyUrl,
+          });
+          console.log(
+            `Port forward ${id}: local ${session.localPort} → remote ${session.remotePort}`,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          send({ type: 'port_forward_error', message });
+        }
+        break;
+      }
+
+      case 'port_forward_list': {
+        const sessions = Array.from(forwardState.sessions.values()).map((s) => ({
+          id: s.id,
+          localPort: s.localPort,
+          remotePort: s.remotePort,
+          startedAt: s.startedAt.toISOString(),
+          proxyUrl: s.proxyUrl,
+        }));
+        send({ type: 'port_forward_list_result', sessions });
+        break;
+      }
+
+      case 'port_forward_close': {
+        const targets: ForwardSession[] = [];
+        if (msg.all) {
+          targets.push(...forwardState.sessions.values());
+        } else if (msg.id !== undefined) {
+          const session = forwardState.sessions.get(msg.id);
+          if (!session) {
+            send({ type: 'port_forward_error', message: `Port forward ${msg.id} not found` });
+            return;
+          }
+          targets.push(session);
+        } else {
+          send({ type: 'port_forward_error', message: 'Must specify id or all' });
+          return;
+        }
+        const ids: number[] = [];
+        for (const session of targets) {
+          try {
+            await session.close();
+          } catch (err) {
+            console.error(`Port forward ${session.id} close error:`, err);
+          }
+          forwardState.sessions.delete(session.id);
+          ids.push(session.id);
+        }
+        send({ type: 'port_forward_closed', ids });
         break;
       }
     }

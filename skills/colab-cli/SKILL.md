@@ -115,7 +115,7 @@ colab exec --output-dir ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,
 - **Ctrl+C interrupt**: Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel (equivalent to the stop button in the Colab UI). The kernel raises `KeyboardInterrupt`, the traceback is printed, and the CLI exits with a non-zero status. A second Ctrl+C force-exits the CLI immediately. This also works during `input()` prompts — Ctrl+C interrupts the kernel instead of sending input.
 - If the executed Python code raises an exception, `colab exec` exits non-zero.
 - If the code mounts Google Drive or requests an ephemeral Google credential, the foreground CLI may open a consent flow and continue after approval. If `colab drive-mount` was run beforehand, `drive.mount()` detects the existing mount and skips auth entirely.
-- **Background execution** (`--background`): The CLI returns immediately with an exec ID (printed to stdout) while the kernel continues executing. Use `exec attach`, `exec list`, and `exec send` to monitor and interact with background executions. If background code triggers browser auth, the daemon stores the auth URL, snapshot/streaming attach commands print it, and the daemon retries credential propagation automatically every 5 seconds until the browser flow completes or times out. Only one execution (foreground or background) can run at a time — the Jupyter kernel is serial.
+- **Background execution** (`--background`): The CLI returns immediately with an exec ID (printed to stdout) while the kernel continues executing. Use `exec attach`, `exec list`, and `exec send` to monitor and interact with background executions. If background code triggers browser auth, the daemon stores the auth URL, snapshot/streaming attach commands print it, and the daemon retries credential propagation automatically every 5 seconds until the browser flow completes or times out. Only one execution (foreground or background) can run at a time — the Jupyter kernel is serial. For commands that must run alongside a long-running exec (GPU/memory diagnostics, file inspection, side tasks), use `colab shell` — it uses a separate TTY channel that is not subject to the kernel's serial execution.
 
 ### Background Execution Management
 
@@ -156,6 +156,7 @@ colab shell send 1 --signal INT
 
 - Use `colab shell` for a foreground interactive terminal on the latest runtime (or add `--endpoint <endpoint>` when the target matters).
 - Use `colab shell --background` when the caller cannot block on an interactive TTY; it prints a shell ID and leaves the daemon attached to `/colab/tty`.
+- Multiple shell sessions on the same runtime run in parallel and are independent — opening a new shell does not disturb existing ones, and each has its own output buffer.
 - Use `colab shell list` to inspect active shell sessions and whether a client is currently attached.
 - Use `colab shell attach <id> --no-wait` to print buffered output immediately and exit. Use `--tail <bytes>` to limit the replay window by bytes, not lines.
 - Use `colab shell attach <id>` to replay buffered output and continue streaming live output. If another client is already attached, it will be detached and notified.

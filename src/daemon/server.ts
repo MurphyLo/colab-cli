@@ -55,6 +55,7 @@ interface ActiveExecution {
 
 interface ActiveShell {
   shellId: number;
+  tmuxSession: string;
   connection: TerminalConnection;
   buffer: TerminalBuffer;
   attachedSocket?: net.Socket;
@@ -64,6 +65,16 @@ interface ActiveShell {
 
 const MAX_CONCURRENT_SHELLS = 10;
 const MAX_CONCURRENT_PORT_FORWARDS = 20;
+
+/**
+ * Colab's `/colab/tty` endpoint auto-attaches every new WebSocket to a fixed
+ * server-side tmux session (default `0`) with `attach -d`, which kicks off any
+ * prior client. To let multiple shells coexist, each shell is relocated into
+ * its own tmux session right after the WebSocket opens — see the `shell_open`
+ * handler below.
+ */
+const TMUX_SESSION_PREFIX = 'cli-';
+const SHELL_BOOTSTRAP_SETTLE_MS = 400;
 
 const AUTH_POLL_INTERVAL_MS = 5_000;
 const AUTH_POLL_TIMEOUT_MS = 120_000;
@@ -607,6 +618,7 @@ function handleClient(
         }
 
         const shellId = shellState.nextShellId++;
+        const tmuxSession = `${TMUX_SESSION_PREFIX}${shellId}`;
         const buffer = new TerminalBuffer();
 
         const connection = new TerminalConnection(
@@ -622,7 +634,7 @@ function handleClient(
               }
             },
             onOpen: () => {
-              console.log(`Shell ${shellId} connected`);
+              console.log(`Shell ${shellId} connected (tmux session ${tmuxSession})`);
             },
             onClose: (_code, reason) => {
               const shell = shellState.shells.get(shellId);
@@ -650,6 +662,7 @@ function handleClient(
 
         const shell: ActiveShell = {
           shellId,
+          tmuxSession,
           connection,
           buffer,
           startedAt: new Date(),
@@ -659,6 +672,22 @@ function handleClient(
 
         try {
           await connection.connect();
+
+          // Relocate this shell into its own tmux session so concurrent shells
+          // on the same runtime don't kick each other off the shared `/colab/tty`
+          // session. `kill-session` guards against a stale session left behind
+          // by a previous daemon instance (nextShellId resets on daemon restart).
+          connection.send(
+            `tmux kill-session -t ${tmuxSession} 2>/dev/null; ` +
+            `tmux new-session -d -s ${tmuxSession}; ` +
+            `tmux switch-client -t ${tmuxSession}\n`,
+          );
+          // Wait for the bootstrap to settle, then drop redraw noise from the
+          // replay buffer. No client is attached yet (shell_opened is sent
+          // below), so this doesn't affect any viewer.
+          await new Promise((r) => setTimeout(r, SHELL_BOOTSTRAP_SETTLE_MS));
+          buffer.clear();
+
           // Send initial resize if dimensions provided
           if (msg.cols && msg.rows) {
             connection.sendResize(msg.cols, msg.rows);

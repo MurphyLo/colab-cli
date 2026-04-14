@@ -884,9 +884,17 @@ https://7860-<endpoint>.<domain>.colab.dev    (Google 边缘代理)
 
 - `changeOrigin: true`：自动重写 `Host` header 为目标域名
 - `ws: true`：支持 WebSocket upgrade
+- **Origin/Referer 请求头重写**：浏览器对 `localhost` 页面发起的请求会携带 `Origin: http://localhost:PORT`，Colab 边缘代理对不匹配的 Origin 返回 404。因此在 `proxy.web()`/`proxy.ws()` 前将 `req.headers.origin` 重写为 Colab 代理 URL，`referer` 同理保留路径部分仅替换 scheme+host
+- **CORS 响应头重写**：上游 `Access-Control-Allow-Origin` 会回显 Colab 代理域名，浏览器 CORS 检查会因 origin 不匹配而拒绝 fetch/XHR 响应。通过 `proxyRes` 事件将 `Access-Control-Allow-Origin` 重写为 `http://localhost:PORT`
 - 每个请求通过 `headers` 选项注入最新 token 和 `X-Colab-Client-Agent`
 - 错误处理：HTTP 请求返回 502，WebSocket 连接直接 destroy socket
 - 支持 `HTTPS_PROXY` 环境变量（通过 `getProxyAgent()`）
+
+**已知局限（localhost 代理固有问题）**：
+
+- **302 重定向**：如果被代理的应用返回绝对 URL 的 `Location` 头指向 Colab 代理域名，浏览器会直接跳转到 Colab 域名而绕过本地代理。目前未重写 `Location` 头——如遇此问题可在 `proxyRes` 中添加重写逻辑
+- **Set-Cookie Domain/Secure**：上游设置的 `Domain=.colab.dev` cookie 不会被浏览器存储到 localhost 下；`Secure` 标记的 cookie 不会通过 HTTP 发送。会影响依赖服务端 session 的应用
+- **Mixed Content**：本地代理服务于 HTTP，若页面中包含对自身 HTTPS 域名的硬编码引用可能触发混合内容策略
 
 #### 4.11.4 会话管理
 

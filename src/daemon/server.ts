@@ -30,6 +30,17 @@ const SOCKET_PATH = path.join(CONFIG_DIR, `daemon-${serverId}.sock`);
 const PID_FILE = path.join(CONFIG_DIR, `daemon-${serverId}.pid`);
 
 function cleanupFiles() {
+  // Only remove files we actually own. If another daemon has taken over the
+  // socket (e.g. we lost a startup race and are exiting), leave its files
+  // intact instead of deleting them out from under it.
+  let ownedByUs = false;
+  try {
+    const storedPid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
+    ownedByUs = storedPid === process.pid;
+  } catch {
+    return;
+  }
+  if (!ownedByUs) return;
   try { fs.unlinkSync(SOCKET_PATH); } catch {}
   try { fs.unlinkSync(PID_FILE); } catch {}
 }
@@ -42,6 +53,39 @@ function isSocketAlive(socketPath: string): Promise<boolean> {
     });
     client.on('error', () => resolve(false));
   });
+}
+
+/**
+ * Claim the daemon's Unix socket. If another daemon is already listening, exit
+ * cleanly. If the socket file is stale (nothing is listening), remove it and
+ * retry. This atomic helper replaces the legacy isSocketAlive → unlink →
+ * listen dance, which had a race window where two concurrent daemons could
+ * both conclude the socket was stale and both try to listen.
+ */
+async function claimSocket(server: net.Server, socketPath: string): Promise<void> {
+  const doListen = () => new Promise<void>((resolve, reject) => {
+    const onError = (err: unknown) => reject(err);
+    server.once('error', onError);
+    server.listen(socketPath, () => {
+      server.removeListener('error', onError);
+      resolve();
+    });
+  });
+
+  try {
+    await doListen();
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err;
+  }
+
+  if (await isSocketAlive(socketPath)) {
+    console.log('Another daemon is already serving, exiting');
+    process.exit(0);
+  }
+
+  try { fs.unlinkSync(socketPath); } catch {}
+  await doListen();
 }
 
 interface ActiveExecution {
@@ -82,23 +126,19 @@ const AUTH_POLL_TIMEOUT_MS = 120_000;
 async function main() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
 
-  // Defense-in-depth: exit if another daemon is already serving this socket
+  // Fast exit if a peer daemon is already live — skip the rest of startup.
+  // The authoritative claim happens below via claimSocket once the server
+  // instance is built.
   if (await isSocketAlive(SOCKET_PATH)) {
     console.log('Another daemon is already serving, exiting');
     process.exit(0);
   }
-
-  fs.writeFileSync(PID_FILE, String(process.pid));
-
-  // Clean stale socket
-  try { fs.unlinkSync(SOCKET_PATH); } catch {}
 
   // Initialize auth
   const authManager = new AuthManager();
   await authManager.initialize();
   if (!authManager.isLoggedIn()) {
     console.error('Not logged in');
-    cleanupFiles();
     process.exit(1);
   }
 
@@ -106,7 +146,6 @@ async function main() {
   const server = getStoredServer(serverId);
   if (!server) {
     console.error('Server not found:', serverId);
-    cleanupFiles();
     process.exit(1);
   }
 
@@ -264,11 +303,19 @@ async function main() {
     requestEphemeralAuth,
   );
 
-  // Begin kernel connection (may be slow on cold-start GPU runtimes).
-  // Store the promise so exec handlers can await it instead of failing early.
+  // Begin kernel connection (may be slow on cold-start GPU runtimes). The
+  // promise is stored so exec handlers can await it instead of failing early.
+  // Kernel failure does NOT take down the daemon — shell, port-forward, and
+  // future kernel restarts must remain available even when the initial
+  // Jupyter WebSocket times out. The .catch below observes the rejection so
+  // Node doesn't log unhandledRejection; later `await kernelReady` calls in
+  // exec handlers still see the rejected state and fail the exec cleanly.
   console.log('Connecting to kernel...');
   const kernelReady = kernel.connect().then(() => {
     console.log('Kernel connected');
+  });
+  kernelReady.catch((err) => {
+    console.error('Kernel connection failed:', err instanceof Error ? err.message : err);
   });
 
   /** Run execution and route outputs to store + attached socket. */
@@ -353,17 +400,14 @@ async function main() {
     ),
   );
 
-  socketServer.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.log('Socket already in use by another daemon, exiting');
-      process.exit(0);
-    }
-  });
-
-  socketServer.listen(SOCKET_PATH, () => {
-    fs.chmodSync(SOCKET_PATH, 0o600);
-    console.log('Daemon ready on', SOCKET_PATH);
-  });
+  // Atomically claim the socket. If a peer daemon won the race, exit cleanly
+  // (without touching its files). Only after the listener is bound do we
+  // publish the PID file — that way `isDaemonRunning` never observes a PID
+  // belonging to a process that has not yet (or never will) bind the socket.
+  await claimSocket(socketServer, SOCKET_PATH);
+  fs.chmodSync(SOCKET_PATH, 0o600);
+  fs.writeFileSync(PID_FILE, String(process.pid));
+  console.log('Daemon ready on', SOCKET_PATH);
 
   // Shutdown handler
   const shutdown = () => {
@@ -387,16 +431,9 @@ async function main() {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  // Wait for kernel connection to complete (or fail and exit)
-  await kernelReady;
-
-  // Health monitor: exit if WS disconnects unexpectedly (but not during restart)
-  setInterval(() => {
-    if (!kernel.isConnected && !kernel.isRestarting) {
-      console.error('Kernel WebSocket disconnected, shutting down');
-      shutdown();
-    }
-  }, 30_000).unref();
+  // The daemon stays alive as long as the socket server runs. Kernel failure
+  // is handled per-exec via `await kernelReady` in runExecution; shell and
+  // port-forward sessions are independent of kernel state.
 }
 
 function handleClient(
@@ -636,15 +673,17 @@ function handleClient(
             onOpen: () => {
               console.log(`Shell ${shellId} connected (tmux session ${tmuxSession})`);
             },
-            onClose: (_code, reason) => {
+            onClose: (code, reason) => {
               const shell = shellState.shells.get(shellId);
               if (!shell) return;
               shell.status = 'closed';
               if (shell.attachedSocket && !shell.attachedSocket.destroyed) {
                 shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: reason || 'connection closed' }));
               }
-              console.log(`Shell ${shellId} closed: ${reason}`);
-              // Remove closed shell after 5 minutes to free memory
+              // Keep the close code alongside the reason — Colab's /colab/tty
+              // often closes with an empty reason during cold-start, and only
+              // the code (1006 abnormal vs 1000 normal) reveals the cause.
+              console.log(`Shell ${shellId} closed: code=${code} reason=${reason || '(none)'}`);
               setTimeout(() => shellState.shells.delete(shellId), 5 * 60 * 1000);
             },
             onError: (err) => {

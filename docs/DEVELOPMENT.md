@@ -173,18 +173,28 @@ Colab 后端的交互基于长连接。如果每次 `exec` 都临时建立 WebSo
 runtime create
   └──> spawn detached child process: node dist/daemon/server.js <server-id>
          │
+         ├── 快速探测：若 socket 已被另一守护进程占用，直接退出
          ├── 初始化 AuthManager、ColabClient
          ├── 启动 KeepAlive (5 min REST 心跳)
          ├── 启动 ConnectionRefresher (代理令牌刷新)
-         ├── 创建 KernelConnection
-         ├── 开始 kernel.connect()（异步，可能耗时较长）
-         ├── 监听 Unix Socket ← CLI 端检测到此即认为守护进程已就绪
-         └── 等待 kernel.connect() 完成
+         ├── 创建 KernelConnection 并发起 kernel.connect()（fire-and-forget）
+         ├── 原子地 claim Unix Socket（claimSocket）
+         │     ├── listen() 成功 → 通过
+         │     └── EADDRINUSE → 探测 socket 是否在用：
+         │           ├── 在用 → 退出（不触碰对方的文件）
+         │           └── 文件残留 → unlink 后重试 listen()
+         ├── 写入 PID 文件 ← socket 已绑定，CLI 此时即可检测到
+         └── 进入事件循环（守护进程的存活与 kernel 状态解耦）
 ```
 
 守护进程以 `detached: true` 启动，与父进程完全脱离。父进程退出后守护进程继续运行。
 
-**启动顺序说明**：Unix Socket 在 kernel 连接完成 **之前** 就开始监听。这确保了 `startDaemon()` 的 socket 轮询能快速返回，避免在 GPU runtime 冷启动时因 kernel 连接慢而误报"Daemon failed to start within timeout"。如果 exec 请求在 kernel 尚未就绪时到达，守护进程会等待 kernel 连接完成后再处理，而不是立即报错。
+**启动顺序说明**：
+
+- **socket 是唯一的活性凭证**。CLI 端的 `startDaemon()` 通过连接 socket 来确认守护进程就绪（`canConnect`），不依赖 PID 文件，所以 PID 文件被推迟到 socket bind 成功之后才写入。这避免了"PID 已发布但 socket 还没绑定"的中间态——`isDaemonRunning()` 一旦返回 true，CLI 立刻就能连上。
+- **kernel 失败不会拖垮守护进程**。`kernel.connect()` 的 promise 仅由 exec 处理路径 `await`；shell 与 port-forward 不依赖 kernel。冷启动 kernel 超时（60s）时，守护进程继续运行，已创建的 shell 与 port-forward 不会丢失，后续 exec 调用会立即看到失败的 promise 并返回 `exec_error`。
+- **claimSocket 的原子性**。旧实现采用 "isSocketAlive 探测 → unlink → listen" 三步走，存在竞态窗口：两个并发守护进程都判定 socket 是 stale，结果同时 listen，一个成功、一个 EADDRINUSE。新的 `claimSocket` 直接 `listen()`，仅在 EADDRINUSE 时才探测对方是否仍活着，把判断和加锁合并为一次原子动作。
+- **cleanupFiles 检查 PID 归属**。退出时只删除自己写入的 PID 与 socket 文件。如果当前进程是输给竞态后退出的"败者"，对方的文件不会被误删。
 
 ### 3.3 文件约定
 
@@ -192,9 +202,10 @@ runtime create
 
 | 文件 | 用途 |
 |---|---|
-| `daemon-<server-id>.sock` | Unix Socket，CLI 通过它与守护进程通信 |
-| `daemon-<server-id>.pid` | 守护进程 PID，用于检测运行状态和发送信号 |
+| `daemon-<server-id>.sock` | Unix Socket。CLI 端检测守护进程就绪的**唯一**凭证 |
+| `daemon-<server-id>.pid` | 守护进程 PID。供 `stopDaemon` 发送 SIGTERM；socket 绑定成功后才写入 |
 | `daemon-<server-id>.log` | 守护进程日志（stdout/stderr 重定向至此） |
+| `daemon-<server-id>.lock` | 启动锁目录（atomic mkdir），确保单一 CLI 不并发 spawn |
 | `exec-logs-<server-id>/` | 执行历史日志目录（每次执行一个 NDJSON 文件） |
 
 ### 3.4 IPC 协议
@@ -323,11 +334,13 @@ ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `f
 |---|---|
 | `runtime create` | `RuntimeManager.create()` 调用 `startDaemon(serverId)` |
 | `exec` | `DaemonClient.connect()` 检测守护进程是否运行，未运行则自动 `startDaemon()` |
-| `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel。重启期间 `KernelConnection.isRestarting` 为 `true`，健康检查会跳过 |
+| `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel。重启期间 `KernelConnection.isRestarting` 为 `true` |
 | `runtime destroy` | `RuntimeManager.destroy()` 调用 `stopDaemon(serverId)` (SIGTERM)，然后 unassign |
-| 守护进程 WebSocket 断开 | 健康检查（30s 间隔）发现 `!isConnected && !isRestarting` 后自动退出，下次 exec 会重启 |
+| Kernel WebSocket 断开 | 守护进程**继续运行**。后续 exec 在 `await kernelReady` 处看到失败的 promise（或 `kernel.isConnected===false`）并返回 `exec_error`；shell / port-forward 不受影响 |
 | kernel 崩溃（segfault、`os._exit`） | Colab 自动重启 kernel → 新 kernel 发送 `status: starting` → `KernelConnection.handleMessage()` 检测到后 abort 活跃的 `executeAndStream` generator → `runExecution()` catch 调用 `store.fail()` → `crashed` 状态。参见 §4.7 |
 | 系统重启 | PID 文件残留，`isDaemonRunning()` 通过 `kill(pid, 0)` 检测到进程不存在，清理残留文件 |
+
+**何时退出**：守护进程仅在以下场景退出：(1) 收到 SIGTERM/SIGINT；(2) auth 不可用或目标 server 不存在（启动期）；(3) 启动时 socket 已被另一守护进程占用。kernel 失败、kernel WebSocket 断开、单个 shell 关闭都不会触发退出。
 
 ### 3.7 KernelConnection 的动态 URL
 

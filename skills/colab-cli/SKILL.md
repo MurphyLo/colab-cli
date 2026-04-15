@@ -140,6 +140,7 @@ colab exec clear 1
 - Use `exec send <id> --interrupt` to interrupt (Ctrl+C equivalent) a background execution.
 - Use `exec clear` to remove all completed executions, or `exec clear <id>` to remove a specific one. Running and input-waiting executions are preserved.
 - If `input()` is called during background execution with no client attached, execution waits until stdin is delivered via `exec send <id> --stdin` or a client attaches.
+- `--interrupt` only delivers SIGINT to the kernel. Children spawned with `start_new_session=True` / `nohup` / `setsid` or daemon-ized survive and `colab exec` cannot reach them — clean up via `colab shell`.
 
 ### Interactive Shell Sessions
 

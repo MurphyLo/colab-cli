@@ -920,6 +920,15 @@ https://7860-<endpoint>.<domain>.colab.dev    (Google 边缘代理)
 - **Set-Cookie Domain/Secure**：上游设置的 `Domain=.colab.dev` cookie 不会被浏览器存储到 localhost 下；`Secure` 标记的 cookie 不会通过 HTTP 发送。会影响依赖服务端 session 的应用
 - **Mixed Content**：本地代理服务于 HTTP，若页面中包含对自身 HTTPS 域名的硬编码引用可能触发混合内容策略
 
+**WebSocket 行为验证（2026-04-15 烟囱测试，us-west1 CPU runtime，`websockets.serve` echo）**：
+
+- **文本/二进制帧**：所有 256 个字节值均无损透传
+- **单消息大小**：1 KB → 64 MB 全部完整 round-trip，未触达代理侧上限
+- **延迟**：小帧 RTT p50 ≈ 2 × 物理单程 RTT，无可观测代理缓冲
+- **idle 保活**：180s 无流量未被代理主动断开（更长时长未测）
+
+结论：WebSocket 类应用（Gradio 流式输出、实时推流、双向音视频等）无需专项适配。如代理逻辑改动后上述维度（尤其消息大小或 RTT）退化，说明透传链路出现回归。
+
 #### 4.11.4 会话管理
 
 `ForwardSession`（`src/port-forward/session.ts`）组合 token refresher 和 HTTP server：

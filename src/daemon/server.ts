@@ -742,6 +742,7 @@ function handleClient(
           connection.send(
             `tmux kill-session -t ${tmuxSession} 2>/dev/null; ` +
             `tmux new-session -d -s ${tmuxSession}; ` +
+            `tmux set-option -t ${tmuxSession} status off; ` +
             `tmux switch-client -t ${tmuxSession}\n`,
           );
           // Wait for the bootstrap to settle, then drop redraw noise from the

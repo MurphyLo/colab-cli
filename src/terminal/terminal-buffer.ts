@@ -15,8 +15,9 @@ const DEFAULT_MAX_BYTES = 100 * 1024; // 100 KB
  * from a string, returning only the visible text content.
  */
 function stripAnsi(s: string): string {
-  // Matches: CSI sequences (ESC[...X), OSC sequences (ESC]...ST), and other ESC-initiated sequences
-  return s.replace(/\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[^[\]].?/g, '');
+  // Matches: CSI sequences including DEC private modes (ESC[?...X),
+  // OSC sequences (ESC]...ST), and other ESC-initiated sequences
+  return s.replace(/\x1b\[[\x20-\x3f]*[0-9;]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[^[\]].?/g, '');
 }
 
 /**
@@ -53,7 +54,9 @@ function resolveCarriageReturns(line: string): string {
  * Process raw terminal output for snapshot consumption:
  * 1. Strip ANSI escape sequences
  * 2. Resolve \r (carriage return) overwrites within each line
- * 3. Remove blank lines produced by the cleanup
+ * 3. Collapse consecutive blank lines (artifacts of full-screen terminal
+ *    rendering) into at most one
+ * 4. Trim leading/trailing blank lines
  *
  * This makes `--tail` / `--no-wait` output look like what a human would
  * actually see on the terminal screen, instead of showing every intermediate
@@ -67,13 +70,26 @@ function renderForSnapshot(raw: string): string {
   const rendered: string[] = [];
 
   for (const line of lines) {
-    const resolved = resolveCarriageReturns(line);
-    // Keep the line even if empty (preserves intentional blank lines in output),
-    // but drop lines that are purely whitespace artifacts from \r resolution.
-    rendered.push(resolved);
+    rendered.push(resolveCarriageReturns(line));
   }
 
-  return rendered.join('\n');
+  // Collapse consecutive blank lines into at most one. Large runs of blanks
+  // are artifacts of tmux full-screen rendering (empty terminal rows).
+  const collapsed: string[] = [];
+  let prevBlank = false;
+  for (const line of rendered) {
+    const isBlank = line.trim() === '';
+    if (isBlank && prevBlank) continue;
+    collapsed.push(line);
+    prevBlank = isBlank;
+  }
+
+  // Trim leading/trailing blank lines — they are screen-area artifacts,
+  // not meaningful output.
+  while (collapsed.length > 0 && collapsed[0].trim() === '') collapsed.shift();
+  while (collapsed.length > 0 && collapsed[collapsed.length - 1].trim() === '') collapsed.pop();
+
+  return collapsed.join('\n');
 }
 
 export class TerminalBuffer {

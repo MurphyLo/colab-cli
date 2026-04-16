@@ -86,6 +86,9 @@ export class KernelConnection {
   private _jupyterClient?: ProxiedJupyterClient;
   private _lastProxyUrl?: string;
   private _restarting = false;
+  private _closed = false;
+  private _reconnecting = false;
+  private _reconnectTimer?: ReturnType<typeof setTimeout>;
   private messageHandlers = new Map<string, (msg: JupyterMessage) => void>();
   /** Abort callback for the currently running executeAndStream generator. */
   private activeExecutionAbort?: (err: Error) => void;
@@ -173,6 +176,7 @@ export class KernelConnection {
   async restartKernel(): Promise<void> {
     if (!this.kernelId) return;
 
+    this.cancelReconnect();
     this._restarting = true;
     try {
       log.debug('Restarting kernel...');
@@ -219,6 +223,8 @@ export class KernelConnection {
   }
 
   close(): void {
+    this._closed = true;
+    this.cancelReconnect();
     this.messageHandlers.clear();
     if (this.ws) {
       this.ws.removeAllListeners();
@@ -233,6 +239,65 @@ export class KernelConnection {
 
   get isRestarting(): boolean {
     return this._restarting;
+  }
+
+  get isReconnecting(): boolean {
+    return this._reconnecting;
+  }
+
+  private cancelReconnect(): void {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = undefined;
+    }
+    this._reconnecting = false;
+  }
+
+  /**
+   * Rebuild the WebSocket after an unexpected close. Exponential backoff,
+   * capped at 5 attempts. Only the WS is rebuilt — the kernel process on
+   * Colab stays alive, so Python state is preserved. Suppressed during
+   * intentional close() / restartKernel().
+   */
+  private scheduleReconnect(): void {
+    if (this._closed || this._restarting || this._reconnecting) return;
+    this._reconnecting = true;
+    const MAX_ATTEMPTS = 5;
+    const BASE_DELAY_MS = 2_000;
+    let attempt = 0;
+
+    const tryOnce = async () => {
+      if (this._closed || this._restarting) {
+        this._reconnecting = false;
+        return;
+      }
+      attempt++;
+      try {
+        if (this.ws) {
+          this.ws.removeAllListeners();
+          this.ws = undefined;
+        }
+        await this.connectWebSocket();
+        // Bail if close/restart happened while connecting.
+        if (this._closed || this._restarting) {
+          this._reconnecting = false;
+          return;
+        }
+        await this.waitForKernelReady();
+        log.debug(`Kernel WS reconnected (attempt ${attempt})`);
+        this._reconnecting = false;
+      } catch (err) {
+        log.debug(`Kernel WS reconnect attempt ${attempt} failed: ${err instanceof Error ? err.message : err}`);
+        if (attempt >= MAX_ATTEMPTS || this._closed || this._restarting) {
+          log.error(`Kernel WS reconnect gave up after ${attempt} attempts`);
+          this._reconnecting = false;
+          return;
+        }
+        this._reconnectTimer = setTimeout(tryOnce, BASE_DELAY_MS * 2 ** (attempt - 1));
+      }
+    };
+
+    this._reconnectTimer = setTimeout(tryOnce, BASE_DELAY_MS);
   }
 
   private async connectWebSocket(): Promise<void> {
@@ -287,6 +352,10 @@ export class KernelConnection {
           this.activeExecutionAbort(new Error('WebSocket closed during execution'));
           this.activeExecutionAbort = undefined;
         }
+        // Auto-reconnect on unexpected disconnect. Guards inside scheduleReconnect
+        // suppress the attempt during intentional close() / restartKernel() or when
+        // a previous reconnect cycle is still active.
+        this.scheduleReconnect();
       });
     });
   }

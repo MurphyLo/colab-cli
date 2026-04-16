@@ -323,10 +323,13 @@ async function main() {
     try {
       await kernelReady;
       if (!kernel.isConnected) {
-        store.fail(execId, 'Kernel not connected');
+        const message = kernel.isReconnecting
+          ? 'Kernel WebSocket is reconnecting, retry in a few seconds.'
+          : 'Kernel WebSocket disconnected and auto-reconnect failed. Run `colab runtime restart` to restore exec (resets kernel state; shell and port-forward unaffected).';
+        store.fail(execId, message);
         const active = execState.activeExecution;
         if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
-          active.attachedSocket.write(encode({ type: 'exec_error', message: 'Kernel not connected' }));
+          active.attachedSocket.write(encode({ type: 'exec_error', message }));
         }
         return;
       }
@@ -370,7 +373,10 @@ async function main() {
         active.attachedSocket.write(encode({ type: 'exec_done' }));
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      let message = err instanceof Error ? err.message : String(err);
+      if (!kernel.isConnected && !kernel.isReconnecting) {
+        message += '. Run `colab runtime restart` to restore exec (resets kernel state; shell and port-forward unaffected).';
+      }
       store.fail(execId, message);
       const active = execState.activeExecution;
       if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {

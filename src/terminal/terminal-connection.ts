@@ -131,6 +131,8 @@ export class TerminalConnection {
         ...(agent ? { agent } : {}),
       });
 
+      let opened = false;
+
       const timeout = setTimeout(() => {
         if (this.ws) {
           this.ws.removeAllListeners();
@@ -142,6 +144,7 @@ export class TerminalConnection {
 
       this.ws.on('open', () => {
         clearTimeout(timeout);
+        opened = true;
         log.debug('Terminal WebSocket connected');
         this.flushPendingMessages();
         this.startPing();
@@ -151,10 +154,15 @@ export class TerminalConnection {
         resolve();
       });
 
+      // Post-open errors (network resets, etc.) commonly fire 'error' before
+      // 'close'. Surfacing onError here would race scheduleReconnect and cause
+      // the caller to mark the shell closed before the reconnect kicks in. So
+      // only surface onError for pre-open failures; let 'close' drive recovery
+      // for anything after the handshake.
       this.ws.on('error', (err) => {
         clearTimeout(timeout);
         log.error('Terminal WebSocket error:', err);
-        if (!this._closed) {
+        if (!opened && !this._closed) {
           this.handlers.onError(err);
         }
         reject(err);

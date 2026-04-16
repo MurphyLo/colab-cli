@@ -861,8 +861,12 @@ colab shell attach 1       Daemon                    Colab Runtime
 - 触发条件：`onclose` 事件且非主动 `close()` 调用（即 `_closed === false`）
 - 策略：指数退避（2s → 4s → 8s → 16s → 32s），最多 5 次
 - 重连成功后触发 `onReconnected` 回调，daemon 在此回调中重新 `tmux switch-client -t cli-<shellId>` 恢复 shell 会话
-- 重连期间 `isReconnecting` 为 true，`onError` 回调利用此标志抑制错误日志
 - 所有重试耗尽后才触发 `onClose` 回调，此时 shell 标记为 `closed`
+
+**`onError` 语义**（避免与 reconnect 竞态）：
+- `ws` 库在连接建立后遇到 ECONNRESET 等异常时通常先 emit `'error'` 再 emit `'close'`。若此时无条件向上层回调 `onError`，会在 `scheduleReconnect` 触发前就被 daemon 标记为 `closed`
+- 因此 `connectWebSocket` 内跟踪 `opened` 标志：**仅在 pre-open 阶段**（握手失败）调用 `handlers.onError(err)`；post-open 的 error 只记录日志，交给随后的 `'close'` 事件驱动 reconnect。与 `KernelConnection` 的 "error 仅 log / close 驱动 reconnect" 模式等价
+- `server.ts onError` 另外用 `isReconnecting` 作二次兜底，抑制重连过程中连接尝试失败的噪音
 
 **ping 保活**（`startPing()`）：
 - 每 30 秒发送一次 WebSocket 层 `ping` 帧（`ws.ping()`），利用协议级 ping/pong 检测连接存活

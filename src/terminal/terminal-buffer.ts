@@ -4,8 +4,8 @@
  * Stores recent terminal output in memory for replay on attach.
  * When the buffer exceeds `maxBytes`, the oldest chunks are evicted.
  *
- * No disk persistence — the `/colab/tty` endpoint is ephemeral
- * (no session reconnect), so disk recovery adds no value.
+ * No disk persistence — in-memory replay is sufficient for the CLI's
+ * attach/detach model and the bounded buffer size.
  */
 
 const DEFAULT_MAX_BYTES = 100 * 1024; // 100 KB

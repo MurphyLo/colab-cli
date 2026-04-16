@@ -685,27 +685,39 @@ function handleClient(
               console.log(`Shell ${shellId} connected (tmux session ${tmuxSession})`);
             },
             onClose: (code, reason) => {
+              // onClose only fires after all reconnect attempts are exhausted
               const shell = shellState.shells.get(shellId);
               if (!shell) return;
               shell.status = 'closed';
               if (shell.attachedSocket && !shell.attachedSocket.destroyed) {
                 shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: reason || 'connection closed' }));
               }
-              // Keep the close code alongside the reason — Colab's /colab/tty
-              // often closes with an empty reason during cold-start, and only
-              // the code (1006 abnormal vs 1000 normal) reveals the cause.
               console.log(`Shell ${shellId} closed: code=${code} reason=${reason || '(none)'}`);
               setTimeout(() => shellState.shells.delete(shellId), 5 * 60 * 1000);
             },
             onError: (err) => {
+              // Errors during reconnect are handled internally; this fires
+              // for non-recoverable errors only (e.g. initial connect failure).
               const shell = shellState.shells.get(shellId);
               if (!shell) return;
+              if (shell.connection.isReconnecting) return; // suppress during reconnect
               shell.status = 'closed';
               if (shell.attachedSocket && !shell.attachedSocket.destroyed) {
                 shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: err.message }));
               }
               console.error(`Shell ${shellId} error:`, err.message);
               setTimeout(() => shellState.shells.delete(shellId), 5 * 60 * 1000);
+            },
+            onReconnecting: (attempt, maxAttempts) => {
+              console.log(`Shell ${shellId} reconnecting (attempt ${attempt}/${maxAttempts})...`);
+            },
+            onReconnected: () => {
+              const shell = shellState.shells.get(shellId);
+              if (!shell) return;
+              console.log(`Shell ${shellId} reconnected, re-attaching tmux session ${tmuxSession}`);
+              // Re-switch to the shell's own tmux session. The tmux session
+              // survived the WS disconnect, so all state is preserved.
+              shell.connection.send(`tmux switch-client -t ${tmuxSession}\n`);
             },
           },
         );

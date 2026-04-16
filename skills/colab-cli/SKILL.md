@@ -151,7 +151,7 @@ colab shell list
 colab shell attach 1 --no-wait
 colab shell attach 1 --tail 4096
 colab shell attach 1
-colab shell send 1 --data "ls -la\\n"
+colab shell send 1 --data 'ls -la\n'
 colab shell send 1 --signal INT
 ```
 
@@ -161,7 +161,7 @@ colab shell send 1 --signal INT
 - Use `colab shell list` to inspect active shell sessions and whether a client is currently attached.
 - Use `colab shell attach <id> --no-wait` to print buffered output immediately and exit. Use `--tail <bytes>` to limit the replay window by bytes, not lines.
 - Use `colab shell attach <id>` to replay buffered output and continue streaming live output. If another client is already attached, it will be detached and notified.
-- Use `colab shell send <id> --data ...` to inject raw bytes into a detached shell. Escape sequences such as `\\n` and `\\x03` are supported.
+- Use `colab shell send <id> --data ...` to inject raw bytes into a detached shell. Escape sequences such as `\\n` and `\\x03` are supported. **Always use single quotes** for `--data` values — double quotes let bash expand `$`, `!`, `` ` ``, etc., causing silent failures or wrong paths.
 - Use `colab shell send <id> --signal INT|EOF|TSTP|QUIT` for common control characters. `INT` is Ctrl+C, `EOF` is Ctrl+D, `TSTP` is Ctrl+Z, and `QUIT` maps to Ctrl+\.
 - In a foreground shell session, `Ctrl+\` is intercepted locally to detach the CLI without sending the byte to the remote shell.
 - Closed shell sessions remain visible briefly so users can inspect final buffered output before daemon cleanup evicts them.

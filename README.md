@@ -330,10 +330,15 @@ colab shell attach 1
 Send raw data or control signals to a detached shell:
 
 ```bash
-colab shell send 1 --data "ls -la\\n"
+colab shell send 1 --data 'ls -la\n'
 colab shell send 1 --signal INT    # Ctrl+C
 colab shell send 1 --signal EOF    # Ctrl+D
 ```
+
+> **Tip:** Prefer **single quotes** for `--data` values containing `!`, `$`,
+> `` ` ``, or other shell metacharacters. In interactive bash, double quotes
+> allow expansion of `$` (variables), `!` (history), `` ` `` (command
+> substitution), etc., which can silently alter or swallow the entire command.
 
 If another client attaches to the same shell, the previous client is detached
 and notified. Closed shell sessions remain queryable for a short grace period

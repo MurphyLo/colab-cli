@@ -203,7 +203,7 @@ runtime create
 | 文件 | 用途 |
 |---|---|
 | `daemon-<server-id>.sock` | Unix Socket。CLI 端检测守护进程就绪的**唯一**凭证 |
-| `daemon-<server-id>.pid` | 守护进程 PID。供 `stopDaemon` 发送 SIGTERM；socket 绑定成功后才写入 |
+| `daemon-<server-id>.pid` | 守护进程 PID。用于 `stopDaemon` 协议失败后的 SIGTERM 回退与诊断；socket 绑定成功后才写入。**不**参与活性判定 |
 | `daemon-<server-id>.log` | 守护进程日志（stdout/stderr 重定向至此） |
 | `daemon-<server-id>.lock` | 启动锁目录（atomic mkdir），确保单一 CLI 不并发 spawn |
 | `exec-logs-<server-id>/` | 执行历史日志目录（每次执行一个 NDJSON 文件） |
@@ -222,6 +222,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 {"type": "interrupt"}
 {"type": "restart"}
 {"type": "ping"}
+{"type": "shutdown"}
 {"type": "exec_attach", "execId": 1}
 {"type": "exec_attach", "execId": 1, "noWait": true, "tail": 20}
 {"type": "exec_list"}
@@ -335,10 +336,10 @@ ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `f
 | `runtime create` | `RuntimeManager.create()` 调用 `startDaemon(serverId)` |
 | `exec` | `DaemonClient.connect()` 检测守护进程是否运行，未运行则自动 `startDaemon()` |
 | `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel。重启期间 `KernelConnection.isRestarting` 为 `true` |
-| `runtime destroy` | `RuntimeManager.destroy()` 调用 `stopDaemon(serverId)` (SIGTERM)，然后 unassign |
+| `runtime destroy` | `RuntimeManager.destroy()` 调用 `stopDaemon(serverId)`（协议优先：发 `shutdown` 让守护进程自清理；socket 不可达或 5s 内未退出时回退 SIGTERM），然后 unassign |
 | Kernel WebSocket 断开 | 守护进程**继续运行**。后续 exec 在 `await kernelReady` 处看到失败的 promise（或 `kernel.isConnected===false`）并返回 `exec_error`；shell / port-forward 不受影响 |
 | kernel 崩溃（segfault、`os._exit`） | Colab 自动重启 kernel → 新 kernel 发送 `status: starting` → `KernelConnection.handleMessage()` 检测到后 abort 活跃的 `executeAndStream` generator → `runExecution()` catch 调用 `store.fail()` → `crashed` 状态。参见 §4.7 |
-| 系统重启 | PID 文件残留，`isDaemonRunning()` 通过 `kill(pid, 0)` 检测到进程不存在，清理残留文件 |
+| 系统重启 | `.pid` / `.sock` 文件残留。`isDaemonRunning()` 以 socket 可达性为判据返回 false → `startDaemon()` spawn 新守护进程 → `claimSocket()` 发现 socket 文件为 stale 后 unlink 并 listen |
 
 **何时退出**：守护进程仅在以下场景退出：(1) 收到 SIGTERM/SIGINT；(2) auth 不可用或目标 server 不存在（启动期）；(3) 启动时 socket 已被另一守护进程占用。kernel 失败、kernel WebSocket 断开、单个 shell 关闭都不会触发退出。
 

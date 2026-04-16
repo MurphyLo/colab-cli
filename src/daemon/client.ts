@@ -23,7 +23,7 @@ export class DaemonClient {
   private closed = false;
 
   async connect(serverId: UUID): Promise<void> {
-    if (!isDaemonRunning(serverId)) {
+    if (!(await isDaemonRunning(serverId))) {
       await startDaemon(serverId);
     }
 

@@ -652,6 +652,11 @@ function handleClient(
         send({ type: 'pong' });
         break;
 
+      case 'shutdown':
+        socket.end();
+        process.kill(process.pid, 'SIGTERM');
+        break;
+
       // ── Shell session handlers ──
 
       case 'shell_open': {

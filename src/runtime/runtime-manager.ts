@@ -69,7 +69,7 @@ export class RuntimeManager {
     const server = servers.find((s) => s.endpoint === endpoint);
 
     if (server) {
-      stopDaemon(server.id);
+      await stopDaemon(server.id);
       removeStoredServer(server.id);
     }
 

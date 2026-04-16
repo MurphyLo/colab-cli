@@ -9,6 +9,7 @@ export type ClientMessage =
   | { type: 'interrupt' }
   | { type: 'restart' }
   | { type: 'ping' }
+  | { type: 'shutdown' }
   | { type: 'exec_attach'; execId: number; noWait?: boolean; tail?: number }
   | { type: 'exec_list' }
   | { type: 'exec_send'; execId: number; stdin?: string; interrupt?: boolean }

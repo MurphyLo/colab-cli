@@ -26,21 +26,16 @@ function getLockPath(serverId: UUID): string {
   return path.join(CONFIG_DIR, `daemon-${serverId}.lock`);
 }
 
-export function isDaemonRunning(serverId: UUID): boolean {
-  const pidPath = getPidPath(serverId);
-  try {
-    const pid = parseInt(fs.readFileSync(pidPath, 'utf-8').trim(), 10);
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    cleanupStaleFiles(serverId);
-    return false;
-  }
-}
-
-function cleanupStaleFiles(serverId: UUID): void {
-  try { fs.unlinkSync(getPidPath(serverId)); } catch {}
-  try { fs.unlinkSync(getSocketPath(serverId)); } catch {}
+/**
+ * A daemon is "running" iff its Unix socket accepts connections. The .pid file
+ * is informational only — signal probing via `process.kill(pid, 0)` was
+ * unreliable under macOS sandboxing and across PID reuse, and misclassifying a
+ * live daemon as dead caused silent state loss (duplicate daemons, orphaned
+ * port forwards, empty `port-forward list`). Socket reachability is what
+ * clients actually care about, so use it as the single source of truth.
+ */
+export async function isDaemonRunning(serverId: UUID): Promise<boolean> {
+  return canConnect(getSocketPath(serverId));
 }
 
 /** In-process dedup: coalesce concurrent startDaemon calls for the same server. */
@@ -68,7 +63,7 @@ export async function startDaemon(serverId: UUID): Promise<void> {
  * lock is released.
  */
 async function startDaemonWithLock(serverId: UUID): Promise<void> {
-  if (isDaemonRunning(serverId)) {
+  if (await isDaemonRunning(serverId)) {
     log.debug('Daemon already running for', serverId);
     return;
   }
@@ -81,7 +76,7 @@ async function startDaemonWithLock(serverId: UUID): Promise<void> {
     if (tryAcquireLock(lockPath)) {
       try {
         // Re-check under lock — another process may have started the daemon
-        if (isDaemonRunning(serverId)) {
+        if (await isDaemonRunning(serverId)) {
           log.debug('Daemon already running for', serverId);
           return;
         }
@@ -103,6 +98,13 @@ async function startDaemonWithLock(serverId: UUID): Promise<void> {
   );
 }
 
+/**
+ * Daemon startup is bounded by `spawnAndWait`'s 30s timeout; a lock older than
+ * this cannot belong to a live starter. Using mtime instead of PID probing
+ * avoids the same EPERM/reuse hazards that killed signal-based liveness.
+ */
+const LOCK_STALE_MS = 60_000;
+
 function tryAcquireLock(lockPath: string): boolean {
   try {
     fs.mkdirSync(lockPath);
@@ -110,24 +112,24 @@ function tryAcquireLock(lockPath: string): boolean {
     return true;
   } catch (err: any) {
     if (err.code !== 'EEXIST') return false;
-    // Lock dir exists — check if the holder is still alive
+
+    let ageMs: number;
     try {
-      const pid = parseInt(
-        fs.readFileSync(path.join(lockPath, 'pid'), 'utf-8').trim(),
-        10,
-      );
-      process.kill(pid, 0); // throws if dead
-      return false; // holder is alive
+      ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
     } catch {
-      // Stale lock — previous holder died without cleanup
-      try {
-        fs.rmSync(lockPath, { recursive: true });
-        fs.mkdirSync(lockPath);
-        fs.writeFileSync(path.join(lockPath, 'pid'), String(process.pid));
-        return true;
-      } catch {
-        return false; // another process cleaned it up first
-      }
+      return false; // can't stat — assume held
+    }
+    if (ageMs < LOCK_STALE_MS) return false; // fresh lock, holder active
+
+    // Stale lock — try to steal it. If another process clears it first, we
+    // lose and retry on the next iteration of the caller's wait loop.
+    try {
+      fs.rmSync(lockPath, { recursive: true });
+      fs.mkdirSync(lockPath);
+      fs.writeFileSync(path.join(lockPath, 'pid'), String(process.pid));
+      return true;
+    } catch {
+      return false;
     }
   }
 }
@@ -190,14 +192,46 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export function stopDaemon(serverId: UUID): void {
-  const pidPath = getPidPath(serverId);
-  try {
-    const pid = parseInt(fs.readFileSync(pidPath, 'utf-8').trim(), 10);
-    process.kill(pid, 'SIGTERM');
-    log.debug('Sent SIGTERM to daemon', pid, 'for', serverId);
-  } catch {
-    // Process already dead
+/**
+ * Ask the daemon to shut down. Preferred path is the in-protocol `shutdown`
+ * message, which lets the daemon clean up shells, port forwards, the kernel,
+ * and its own `.sock` / `.pid` files. SIGTERM is a fallback for the case
+ * where the socket is unreachable (daemon stuck or already half-dead). File
+ * cleanup is intentionally left to the daemon — signaling a stale PID that
+ * was reused by an unrelated process must not trash active daemon state.
+ */
+export async function stopDaemon(serverId: UUID): Promise<void> {
+  const socketPath = getSocketPath(serverId);
+
+  const sent = await sendShutdown(socketPath);
+  if (sent) {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (!(await canConnect(socketPath))) return;
+      await sleep(100);
+    }
+    // Daemon acknowledged but didn't exit in time — fall through to SIGTERM.
   }
-  cleanupStaleFiles(serverId);
+
+  try {
+    const pid = parseInt(fs.readFileSync(getPidPath(serverId), 'utf-8').trim(), 10);
+    if (Number.isFinite(pid)) {
+      process.kill(pid, 'SIGTERM');
+      log.debug('Sent SIGTERM to daemon', pid, 'for', serverId);
+    }
+  } catch {
+    // .pid missing / unreadable, or signal denied — nothing more we can do
+    // safely. Daemon owns cleanup; next startup will reclaim the socket.
+  }
+}
+
+function sendShutdown(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const client = net.connect(socketPath, () => {
+      client.write('{"type":"shutdown"}\n');
+      client.end();
+      resolve(true);
+    });
+    client.on('error', () => resolve(false));
+  });
 }

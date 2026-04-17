@@ -229,7 +229,7 @@ program
 const execCmd = program
   .command('exec [code]')
   .description('execute code on a runtime')
-  .option('-f, --file <path>', 'execute code from a file')
+  .option('-f, --file <path>', 'execute code from a file. Omit both [code] and -f to read code from piped stdin/heredoc, useful for complex snippets with nested quotes or $() that are hard to escape')
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .option('-o, --output-dir <path>', 'save image outputs (png, jpeg, gif, svg) to this directory')
   .option('-b, --background', 'run in background and return exec ID immediately')

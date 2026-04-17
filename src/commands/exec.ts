@@ -37,6 +37,18 @@ function resolveOutputDir(dir: string): string {
   return path.resolve(process.cwd(), expanded);
 }
 
+/**
+ * Read all of stdin into a string (for piped / heredoc input).
+ */
+function readStdin(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    process.stdin.on('data', (chunk: Buffer) => chunks.push(chunk));
+    process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    process.stdin.on('error', reject);
+  });
+}
+
 export async function execCommand(
   runtimeManager: RuntimeManager,
   colabClient: ColabClient,
@@ -52,8 +64,11 @@ export async function execCommand(
     code = fs.readFileSync(options.file, 'utf-8');
   } else if (options.code) {
     code = options.code;
+  } else if (!process.stdin.isTTY) {
+    // No [code] / -f given and stdin is piped — read raw code from stdin
+    code = await readStdin();
   } else {
-    console.error('Provide code as argument or use -f <file>');
+    console.error('Provide code as argument, use -f <file>, or pipe code via stdin');
     process.exit(1);
   }
 
@@ -139,8 +154,10 @@ export async function execBgCommand(
     code = fs.readFileSync(options.file, 'utf-8');
   } else if (options.code) {
     code = options.code;
+  } else if (!process.stdin.isTTY) {
+    code = await readStdin();
   } else {
-    console.error('Provide code as argument or use -f <file>');
+    console.error('Provide code as argument, use -f <file>, or pipe code via stdin');
     process.exit(1);
   }
 

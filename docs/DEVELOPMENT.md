@@ -1329,7 +1329,7 @@ runtime create --accelerator <name> [--shape <shape>] [-v <version>]
 runtime list
 runtime destroy [--endpoint <endpoint>]
 runtime restart [--endpoint <endpoint>]
-exec [code] [-f <file>] [-e <endpoint>] [-o <output-dir>]
+exec [code | stdin] [-f <file>] [-e <endpoint>] [-o <output-dir>]
 fs upload <local-path> [-r <remote-path>] [-e <endpoint>]
 fs download <remote-path> [-o <local-path>] [-e <endpoint>]
 drive login

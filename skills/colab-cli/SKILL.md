@@ -110,6 +110,13 @@ colab exec --output-dir ./plots "import matplotlib.pyplot as plt; plt.plot([1,2,
 
 - Use inline code for short snippets.
 - Use `--file` for multi-line scripts or when shell quoting would be fragile.
+- **For complex code** with nested quotes, `$()`, or `$VAR`, omit both `[code]` and `-f` and pipe via stdin (e.g. heredoc) to bypass all local shell escaping. Stdin input is read raw without escape processing:
+  ```bash
+  colab exec <<'EOF'
+  import os
+  print(f"hello {os.environ['USER']}")
+  EOF
+  ```
 - Use `--output-dir <dir>` to save image outputs (PNG, JPEG, GIF, SVG) to a specific directory. Without `--output-dir`, images are saved automatically to `~/.config/colab-cli/outputs/<serverId>/`. File names follow `exec<id>-output-<n>.<ext>` for cross-execution isolation. The saved file path is printed to the terminal.
 - **Interactive input**: Code using `input()` or `getpass.getpass()` works transparently — prompts are forwarded to the terminal, user input is sent back to the kernel, and execution continues. Password prompts (`getpass`) suppress character echo automatically. In non-TTY contexts (e.g., piped stdin), an empty string is returned immediately.
 - **Ctrl+C interrupt**: Pressing Ctrl+C during execution sends an interrupt signal to the Colab kernel (equivalent to the stop button in the Colab UI). The kernel raises `KeyboardInterrupt`, the traceback is printed, and the CLI exits with a non-zero status. A second Ctrl+C force-exits the CLI immediately. This also works during `input()` prompts — Ctrl+C interrupts the kernel instead of sending input.

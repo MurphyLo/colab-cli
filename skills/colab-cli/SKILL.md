@@ -17,7 +17,7 @@ Treat `colab --help` and `colab <subcommand> --help` as the source of truth for 
 - For `runtime`, `exec`, `fs`, and `usage`, check login state with `colab auth status` before acting.
 - If Colab auth is missing, use `colab auth login` and explain that it opens a browser OAuth flow.
 - `colab drive ...` uses a separate OAuth flow from `colab auth login`. The first Drive command may open a separate browser authorization step.
-- `colab drive-mount` requires `COLAB_DRIVEFS_CLIENT_ID` and `COLAB_DRIVEFS_CLIENT_SECRET` environment variables. Without them the command is hidden and the standard browser-based ephemeral auth flow is used.
+- `colab drive-mount` requires `COLAB_DRIVEFS_CLIENT_ID` and `COLAB_DRIVEFS_CLIENT_SECRET` environment variables. Without them the command group is hidden entirely; users must fall back to calling `drive.mount('/content/drive')` inside Python, which triggers an in-browser ephemeral OAuth flow on every new runtime.
 - If the machine is behind a proxy, export the relevant proxy environment variables (e.g., `HTTPS_PROXY`) before calling `colab`.
 - If the command is missing, ensure Node.js is installed, then clone the repository (e.g., `git clone https://github.com/Murphylo/colab-cli.git`), navigate into it, and run `npm install`, `npm run build`, and `npm link`.
 
@@ -35,10 +35,18 @@ Treat `colab --help` and `colab <subcommand> --help` as the source of truth for 
 
 When a command could act on multiple runtimes, prefer identifying the target explicitly with `colab runtime list` before using `--endpoint`.
 
+## Exploratory / Unverified Workflows
+
+When reproducing a project, running an unvalidated script, or otherwise executing untested code, do not compose a long pipeline and walk away:
+
+- Break the task into small verifiable steps and inspect each step's output before launching the next. What counts as a step depends on the task.
+- Avoid chaining multiple stages into a single `colab exec --background` or `colab shell --background` invocation while any stage is unproven — one typo or missing dep wastes the entire run.
+- While a step is still unproven, poll with short waits (5–15s between `exec attach --no-wait` / `shell attach --no-wait`) so early failures surface fast. Only extend to 30s+ once the step is observably stable and the remaining time is genuine compute (e.g., model training).
+
 ## Runtime Semantics
 
 - Runtime accelerators use Colab UI names such as `CPU`, `T4`, `A100`, `L4`, `G4`, `H100`, `v6e-1`, and `v5e-1`.
-- Shapes use `standard` or `high-ram`.
+- Shapes use `standard` or `high-ram`. Some accelerators are high-RAM-only; if unsure, omit `--shape` or check `colab runtime available`.
 
 ## JSON Output (`--json`)
 
@@ -226,7 +234,7 @@ colab drive delete <file-id> --permanent
 
 - `colab drive` has its own OAuth session and does not rely on `colab auth login`.
 - Drive commands use file IDs and folder IDs, not human-readable names or path strings. If the user only knows a name, list the folder first to find the ID.
-- `colab drive list` can also show files shared with you, and `drive move` copies items you do not own instead of moving them.
+- Use `colab drive list shared` to browse files shared with you. `drive move` on an item you don't own falls back to a copy instead of moving.
 - `drive upload` is resumable for large files and can continue after interruption by re-running the same command.
 - For large assets, durable storage, or workflows that rely on `drive.mount('/content/drive')`, prefer `colab drive` over `colab fs`.
 
@@ -271,8 +279,5 @@ colab drive-mount status                 # Check authorization status
 
 ## Response Style
 
-- State which runtime endpoint you are using when the command is endpoint-sensitive.
-- State clearly whether you are operating on the runtime filesystem or Google Drive.
-- Quote code snippets and file paths conservatively to avoid shell parsing mistakes.
-- Summarize outcomes in terms the user cares about: auth status, selected accelerator, endpoint, execution result, uploaded file, downloaded path, Drive file ID, Drive folder ID, or quota state.
-- Keep the workflow terminal-first.
+- State which runtime endpoint you are acting on when multiple runtimes exist.
+- State clearly whether the target is the runtime filesystem (`/content`) or Google Drive.

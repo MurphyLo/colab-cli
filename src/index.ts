@@ -323,7 +323,7 @@ shellCmd
   .description('attach to a shell session (replay buffer + stream live output)')
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .option('--no-wait', 'print buffered output and exit immediately')
-  .option('--tail <n>', 'only last N bytes of output (implies --no-wait)', parseInt)
+  .option('--tail <n>', 'only last N lines of rendered output (implies --no-wait)', parseInt)
   .action(async (id: string, opts) => {
     await ensureLoggedIn();
     await shellAttachCommand(runtimeManager, parseInt(id, 10), {

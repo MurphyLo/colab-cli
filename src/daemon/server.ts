@@ -105,7 +105,14 @@ interface ActiveShell {
   attachedSocket?: net.Socket;
   startedAt: Date;
   status: ShellStatus;
+  /** Remote tmux terminal dimensions — last value we sent via sendResize,
+   * used by snapshot rendering to emulate the screen accurately. */
+  cols: number;
+  rows: number;
 }
+
+const DEFAULT_SHELL_COLS = 80;
+const DEFAULT_SHELL_ROWS = 24;
 
 const MAX_CONCURRENT_SHELLS = 10;
 const MAX_CONCURRENT_PORT_FORWARDS = 20;
@@ -729,6 +736,8 @@ function handleClient(
           buffer,
           startedAt: new Date(),
           status: 'running',
+          cols: msg.cols || DEFAULT_SHELL_COLS,
+          rows: msg.rows || DEFAULT_SHELL_ROWS,
         };
         shellState.shells.set(shellId, shell);
 
@@ -781,6 +790,8 @@ function handleClient(
         const shell = shellState.shells.get(msg.shellId);
         if (!shell || shell.status === 'closed') return;
         shell.connection.sendResize(msg.cols, msg.rows);
+        shell.cols = msg.cols;
+        shell.rows = msg.rows;
         break;
       }
 
@@ -800,9 +811,10 @@ function handleClient(
         }
 
         if (msg.noWait) {
-          // Snapshot mode: return buffered output + status, don't attach
-          // Pass snapshot=true so \r overwrites and ANSI escapes are resolved
-          const buffered = shell.buffer.getContents(msg.tail, true);
+          // Snapshot mode: render the buffered output through a virtual screen
+          // so cursor-positioning redraws (tmux forwarding, rich.progress
+          // panels) collapse to the final visible text. `tail` counts lines.
+          const buffered = shell.buffer.getSnapshot(shell.cols, shell.rows, msg.tail);
           send({ type: 'shell_attach_batch', shellId: msg.shellId, buffered, status: shell.status });
         } else {
           // Streaming mode: attach socket for live output
@@ -816,6 +828,8 @@ function handleClient(
           // Send resize to remote terminal if dimensions provided
           if (msg.cols && msg.rows && shell.status === 'running') {
             shell.connection.sendResize(msg.cols, msg.rows);
+            shell.cols = msg.cols;
+            shell.rows = msg.rows;
           }
           // If shell already closed, notify immediately
           if (shell.status === 'closed') {

@@ -156,7 +156,7 @@ colab shell
 colab shell --background
 colab shell list
 colab shell attach 1 --no-wait
-colab shell attach 1 --tail 4096
+colab shell attach 1 --tail 40
 colab shell attach 1
 colab shell send 1 --data 'ls -la\n'
 colab shell send 1 --signal INT
@@ -166,7 +166,7 @@ colab shell send 1 --signal INT
 - Use `colab shell --background` when the caller cannot block on an interactive TTY; it prints a shell ID and leaves the daemon attached to `/colab/tty`.
 - Multiple shell sessions on the same runtime run in parallel and are independent — opening a new shell does not disturb existing ones, and each has its own output buffer.
 - Use `colab shell list` to inspect active shell sessions and whether a client is currently attached.
-- Use `colab shell attach <id> --no-wait` to print buffered output immediately and exit. Use `--tail <bytes>` to limit the replay window by bytes, not lines.
+- Use `colab shell attach <id> --no-wait` to print buffered output immediately and exit. Use `--tail <n>` to return only the last N lines.
 - Use `colab shell attach <id>` to replay buffered output and continue streaming live output. If another client is already attached, it will be detached and notified.
 - Use `colab shell send <id> --data ...` to inject raw bytes into a detached shell. Escape sequences such as `\\n` and `\\x03` are supported. For simple values, prefer single quotes to avoid bash expanding `$`, `!`, `` ` ``, etc.
 - **For complex commands** with nested quotes, `$()`, or `$VAR`, omit `--data` and pipe via stdin (e.g. heredoc) to bypass all local shell escaping. Stdin input is sent raw without escape processing:
@@ -261,7 +261,7 @@ colab drive-mount status                 # Check authorization status
 - Image outputs from `exec` are saved under `~/.config/colab-cli/outputs/<serverId>/`.
 - Execution history (background and foreground) is stored under `~/.config/colab-cli/exec-logs-<server-id>/`.
 - If `colab shell send` reports that the shell was not found or is closed, the daemon has already cleaned it up or the shell has exited; run `colab shell list` to confirm the current shell IDs.
-- `colab shell attach --tail <n>` uses bytes, not lines.
+- `colab shell attach --tail <n>` counts lines, not bytes. Progress bars (pip, `tqdm`, `hf download`, etc.) collapse to their final visible state in the snapshot, so it is safe to parse as plain text.
 - If a Drive command fails because the input looks like a filename instead of an ID, run `colab drive list` first and use the actual file or folder ID.
 - If `input()` prompts are not appearing or return empty, check that stdin is a TTY. In non-TTY mode (piped input, CI), prompts are skipped and empty strings are returned.
 - If Ctrl+C does not interrupt a long-running kernel execution, press Ctrl+C a second time to force-exit the CLI process.

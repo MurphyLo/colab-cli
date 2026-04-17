@@ -318,7 +318,7 @@ Inspect buffered output without blocking:
 
 ```bash
 colab shell attach 1 --no-wait
-colab shell attach 1 --tail 4096   # last 4096 bytes only
+colab shell attach 1 --tail 40     # last 40 rendered lines only
 ```
 
 Re-attach for live streaming:
@@ -608,7 +608,7 @@ colab runtime restart [--endpoint <endpoint>]
 colab usage
 colab exec [code] [-f <file>] [-e <endpoint>] [-o <output-dir>]
 colab shell [-e <endpoint>] [-b]
-colab shell attach <id> [-e <endpoint>] [--no-wait] [--tail <bytes>]
+colab shell attach <id> [-e <endpoint>] [--no-wait] [--tail <lines>]
 colab shell list [-e <endpoint>]
 colab shell send <id> [-e <endpoint>] [--data <data> | --signal <signal> | stdin]
 colab port-forward create <spec> [-e <endpoint>]

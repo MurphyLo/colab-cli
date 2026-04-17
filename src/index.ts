@@ -348,7 +348,7 @@ shellCmd
   .command('send <id>')
   .description('send raw data or signal to a shell session')
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
-  .option('-d, --data <data>', "raw data to send (supports \\n, \\x03 escapes; prefer single quotes to avoid bash expanding $, !, `, etc.)")
+  .option('-d, --data <data>', "raw data to send (supports \\n, \\x03 escapes; prefer single quotes for simple values). Omit --data to read raw bytes from piped stdin/heredoc, useful for complex commands with nested quotes or $() that are hard to escape")
   .option(
     '--signal <signal>',
     'send signal: INT (Ctrl+C), EOF (Ctrl+D), TSTP (Ctrl+Z), QUIT (Ctrl+\\)',

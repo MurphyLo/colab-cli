@@ -161,7 +161,13 @@ colab shell send 1 --signal INT
 - Use `colab shell list` to inspect active shell sessions and whether a client is currently attached.
 - Use `colab shell attach <id> --no-wait` to print buffered output immediately and exit. Use `--tail <bytes>` to limit the replay window by bytes, not lines.
 - Use `colab shell attach <id>` to replay buffered output and continue streaming live output. If another client is already attached, it will be detached and notified.
-- Use `colab shell send <id> --data ...` to inject raw bytes into a detached shell. Escape sequences such as `\\n` and `\\x03` are supported. **Always use single quotes** for `--data` values — double quotes let bash expand `$`, `!`, `` ` ``, etc., causing silent failures or wrong paths.
+- Use `colab shell send <id> --data ...` to inject raw bytes into a detached shell. Escape sequences such as `\\n` and `\\x03` are supported. For simple values, prefer single quotes to avoid bash expanding `$`, `!`, `` ` ``, etc.
+- **For complex commands** with nested quotes, `$()`, or `$VAR`, omit `--data` and pipe via stdin (e.g. heredoc) to bypass all local shell escaping. Stdin input is sent raw without escape processing:
+  ```bash
+  colab shell send 1 <<'EOF'
+  export LD_LIBRARY_PATH=$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))'):$LD_LIBRARY_PATH
+  EOF
+  ```
 - Use `colab shell send <id> --signal INT|EOF|TSTP|QUIT` for common control characters. `INT` is Ctrl+C, `EOF` is Ctrl+D, `TSTP` is Ctrl+Z, and `QUIT` maps to Ctrl+\.
 - In a foreground shell session, `Ctrl+\` is intercepted locally to detach the CLI without sending the byte to the remote shell.
 - Closed shell sessions remain visible briefly so users can inspect final buffered output before daemon cleanup evicts them.

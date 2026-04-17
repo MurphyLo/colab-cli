@@ -335,10 +335,21 @@ colab shell send 1 --signal INT    # Ctrl+C
 colab shell send 1 --signal EOF    # Ctrl+D
 ```
 
+For complex commands with nested quotes, `$()`, or `$VAR`, pipe via stdin to
+bypass all local shell escaping:
+
+```bash
+colab shell send 1 <<'EOF'
+export LD_LIBRARY_PATH=$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))'):$LD_LIBRARY_PATH
+EOF
+```
+
+When `--data` is omitted and stdin is piped (or provided via heredoc), the
+raw bytes are sent directly without escape processing.
+
 > **Tip:** Prefer **single quotes** for `--data` values containing `!`, `$`,
-> `` ` ``, or other shell metacharacters. In interactive bash, double quotes
-> allow expansion of `$` (variables), `!` (history), `` ` `` (command
-> substitution), etc., which can silently alter or swallow the entire command.
+> `` ` ``, or other shell metacharacters. For anything more complex, use the
+> stdin/heredoc approach above.
 
 If another client attaches to the same shell, the previous client is detached
 and notified. Closed shell sessions remain queryable for a short grace period
@@ -599,7 +610,7 @@ colab exec [code] [-f <file>] [-e <endpoint>] [-o <output-dir>]
 colab shell [-e <endpoint>] [-b]
 colab shell attach <id> [-e <endpoint>] [--no-wait] [--tail <bytes>]
 colab shell list [-e <endpoint>]
-colab shell send <id> [-e <endpoint>] [--data <data> | --signal <signal>]
+colab shell send <id> [-e <endpoint>] [--data <data> | --signal <signal> | stdin]
 colab port-forward create <spec> [-e <endpoint>]
 colab port-forward list [-e <endpoint>]
 colab port-forward close [id] [-e <endpoint>] [--all]

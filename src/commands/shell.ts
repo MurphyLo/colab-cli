@@ -166,6 +166,18 @@ export async function shellListCommand(
   }
 }
 
+/**
+ * Read all of stdin into a string (for piped / heredoc input).
+ */
+function readStdin(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    process.stdin.on('data', (chunk: Buffer) => chunks.push(chunk));
+    process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    process.stdin.on('error', reject);
+  });
+}
+
 export async function shellSendCommand(
   runtimeManager: RuntimeManager,
   shellId: number,
@@ -175,10 +187,6 @@ export async function shellSendCommand(
     signal?: string;
   },
 ): Promise<void> {
-  if (options.data === undefined && !options.signal) {
-    console.error('Provide --data <value> or --signal <name>');
-    process.exit(1);
-  }
   if (options.data !== undefined && options.signal) {
     console.error('--data and --signal are mutually exclusive');
     process.exit(1);
@@ -193,8 +201,14 @@ export async function shellSendCommand(
       process.exit(1);
     }
     data = byte;
+  } else if (options.data !== undefined) {
+    data = unescapeData(options.data);
+  } else if (!process.stdin.isTTY) {
+    // No --data / --signal given and stdin is piped — read raw bytes from stdin
+    data = await readStdin();
   } else {
-    data = unescapeData(options.data!);
+    console.error('Provide --data <value>, --signal <name>, or pipe data via stdin');
+    process.exit(1);
   }
 
   const server = options.endpoint

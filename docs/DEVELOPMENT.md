@@ -841,7 +841,8 @@ colab shell -b             Daemon                    Colab Runtime
     |  [print "1", exit]    |   [no attachedSocket]     |
 
 colab shell send 1         Daemon                    Colab Runtime
-  --data "ls\n"            |                           |
+  --data 'ls\n'            |                           |
+  (or piped stdin)         |                           |
     |-- shell_send -------->|-- {"data":"ls\n"} ------>|
     |  [exit immediately]   |<-- {"data":"file1..."} ---|
                             |   [buffer.append()]       |

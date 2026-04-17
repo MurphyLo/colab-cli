@@ -98,5 +98,11 @@ export function createSpinner(text: string): Ora {
   if (jsonMode) {
     return new SilentSpinner() as unknown as Ora;
   }
+  // In Copilot CLI agent terminals, the output relay layer strips ANSI cursor
+  // control codes but keeps all text, causing spinner frames to flood output.
+  // Disable animation (static text only) to avoid this.
+  if (process.env.COPILOT_CLI) {
+    return ora({ text, isEnabled: false });
+  }
   return ora(text);
 }

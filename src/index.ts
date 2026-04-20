@@ -1,6 +1,6 @@
 #!/usr/bin/env -S node --use-env-proxy --disable-warning=UNDICI-EHPA
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { COLAB_API_DOMAIN, COLAB_GAPI_DOMAIN, OAUTH_CLIENT_ID, DRIVEFS_CLIENT_ID } from './config.js';
 import { AuthManager } from './auth/auth-manager.js';
 import { ColabClient } from './colab/client.js';
@@ -161,17 +161,20 @@ runtime
     '-a, --accelerator <accelerator>',
     'accelerator in Colab UI semantics: CPU, H100, G4, A100, L4, T4, v6e-1, or v5e-1',
   )
-  .option(
-    '-s, --shape <shape>',
-    'machine shape: standard or high-ram',
+  .addOption(
+    new Option('-s, --shape <shape>', 'machine shape').choices([
+      'standard',
+      'high-ram',
+    ]),
   )
   .option(
     '-v, --runtime-version <version>',
     'runtime version label (e.g. 2026.01). See `colab runtime versions`.',
   )
-  .option(
-    '-k, --kernel <kernel>',
-    'kernel type: python3 (default), r, or julia',
+  .addOption(
+    new Option('-k, --kernel <kernel>', 'kernel type')
+      .choices(['python3', 'r', 'julia'])
+      .default('python3'),
   )
   .action(async (opts) => {
     await ensureLoggedIn();

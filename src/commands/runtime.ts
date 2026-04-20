@@ -25,26 +25,12 @@ export async function createRuntimeCommand(
   const selection = parseAcceleratorSelection(options.accelerator);
   const variant = selection.variant;
 
-  let shape: Shape | undefined;
-  switch (options.shape?.toLowerCase()) {
-    case 'high-ram':
-      shape = Shape.HIGHMEM;
-      break;
-    case 'standard':
-      shape = Shape.STANDARD;
-      break;
-    case undefined:
-      shape = undefined;
-      break;
-    default:
-      console.error(
-        `Unknown shape: ${options.shape}. Use standard or high-ram.`,
-      );
-      process.exit(1);
-  }
+  const shape = options.shape === 'high-ram' ? Shape.HIGHMEM
+    : options.shape === 'standard' ? Shape.STANDARD
+    : undefined;
 
   const versionLabel = options.runtimeVersion || undefined;
-  const kernelName = parseKernelName(options.kernel);
+  const kernelName = options.kernel ?? 'python3';
   const spinner = createSpinner(
     `Creating ${variantToMachineType(variant)} runtime${versionLabel ? ` (version ${versionLabel})` : ''}${kernelName !== 'python3' ? ` [${kernelDisplayName(kernelName)}]` : ''}...`,
   ).start();
@@ -66,24 +52,6 @@ export async function createRuntimeCommand(
   } catch (err) {
     spinner.fail('Failed to create runtime');
     throw err;
-  }
-}
-
-function parseKernelName(kernel: string | undefined): string {
-  if (!kernel) return 'python3';
-  const normalized = kernel.trim().toLowerCase();
-  switch (normalized) {
-    case 'python3':
-      return 'python3';
-    case 'r':
-      return 'r';
-    case 'julia':
-      return 'julia';
-    default:
-      console.error(
-        `Unknown kernel: ${kernel}. Use one of: python3, r, julia.`,
-      );
-      process.exit(1);
   }
 }
 

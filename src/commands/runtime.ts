@@ -7,6 +7,7 @@ import {
   shapeToMachineShape,
   isHighMemOnlyAccelerator,
 } from '../colab/api.js';
+import type { Resources } from '../colab/api.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
 import { ColabClient } from '../colab/client.js';
 import { DaemonClient } from '../daemon/client.js';
@@ -373,4 +374,73 @@ export async function listRuntimeVersionsCommand(
     spinner.fail('Failed to fetch runtime versions');
     throw err;
   }
+}
+
+// --- Resources command ---
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const value = bytes / 1024 ** i;
+  return `${value.toFixed(1)} ${units[i]}`;
+}
+
+function pct(used: number, total: number): string {
+  if (total === 0) return '0%';
+  return `${((used / total) * 100).toFixed(1)}%`;
+}
+
+export async function resourcesCommand(
+  runtimeManager: RuntimeManager,
+  colabClient: ColabClient,
+  endpoint?: string,
+): Promise<void> {
+  const server = endpoint
+    ? runtimeManager.getServerByEndpoint(endpoint)
+    : runtimeManager.getLatestServer();
+  if (!server) {
+    console.error('No runtime found. Create one first with `colab runtime create`.');
+    process.exit(1);
+  }
+
+  const spinner = createSpinner('Fetching runtime resources...').start();
+  try {
+    const resources = await colabClient.getResources(server.proxyUrl, server.token);
+    spinner.stop();
+
+    if (isJsonMode()) {
+      jsonResult({ command: 'runtime.resources', endpoint: server.endpoint, ...resources });
+      return;
+    }
+
+    printResources(resources);
+  } catch (err) {
+    spinner.fail('Failed to fetch runtime resources');
+    throw err;
+  }
+}
+
+function printResources(r: Resources): void {
+  console.log(chalk.bold('\nRuntime Resources:'));
+
+  const ramUsed = r.memory.totalBytes - r.memory.freeBytes;
+  console.log(`  ${chalk.cyan('RAM')}:  ${formatBytes(ramUsed)} / ${formatBytes(r.memory.totalBytes)} (${pct(ramUsed, r.memory.totalBytes)})`);
+
+  for (const disk of r.disks) {
+    const fs = disk.filesystem;
+    const label = fs.label ? ` [${fs.label}]` : '';
+    console.log(`  ${chalk.cyan('Disk')}${label}: ${formatBytes(fs.usedBytes)} / ${formatBytes(fs.totalBytes)} (${pct(fs.usedBytes, fs.totalBytes)})`);
+  }
+
+  if (r.gpus.length > 0) {
+    for (const gpu of r.gpus) {
+      const name = gpu.name ?? 'GPU';
+      const memUsage = `${formatBytes(gpu.memoryUsedBytes)} / ${formatBytes(gpu.memoryTotalBytes)}`;
+      const util = gpu.gpuUtilization != null ? ` | util ${(gpu.gpuUtilization * 100).toFixed(0)}%` : '';
+      console.log(`  ${chalk.cyan(name)}: ${memUsage}${util}`);
+    }
+  }
+
+  console.log('');
 }

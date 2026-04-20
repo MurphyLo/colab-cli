@@ -26,11 +26,14 @@ import {
   CredentialsPropagationResult,
   CredentialsPropagationResultSchema,
   isHighMemOnlyAccelerator,
+  Resources,
+  ResourcesSchema,
 } from './api.js';
 import {
   ACCEPT_JSON_HEADER,
   AUTHORIZATION_HEADER,
   COLAB_CLIENT_AGENT_HEADER,
+  COLAB_RUNTIME_PROXY_TOKEN_HEADER,
   COLAB_TUNNEL_HEADER,
   COLAB_VS_CODE_APP_NAME,
   COLAB_VS_CODE_EXTENSION_VERSION,
@@ -104,6 +107,11 @@ export class ColabClient {
         } catch (error) {
           if (error instanceof ColabRequestError && error.status === 412) {
             throw new TooManyAssignmentsError(error.message);
+          }
+          if (error instanceof ColabRequestError && error.status === 503) {
+            throw new AcceleratorUnavailableError(
+              params.accelerator ?? 'default',
+            );
           }
           throw error;
         }
@@ -199,6 +207,31 @@ export class ColabClient {
         signal,
       },
       CredentialsPropagationResultSchema,
+    );
+  }
+
+  /**
+   * Gets the resources (RAM, disk, GPU) for a given runtime.
+   *
+   * @param proxyUrl - The runtime proxy base URL.
+   * @param token - The runtime proxy token.
+   * @param signal - Optional {@link AbortSignal} to cancel the request.
+   * @returns The resources information.
+   */
+  async getResources(
+    proxyUrl: string,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<Resources> {
+    const url = new URL('api/colab/resources', proxyUrl);
+    const headers = {
+      [COLAB_RUNTIME_PROXY_TOKEN_HEADER.key]: token,
+    };
+
+    return await this.issueRequest(
+      url,
+      { method: 'GET', headers, signal },
+      ResourcesSchema,
     );
   }
 
@@ -371,6 +404,14 @@ export class ColabClient {
 }
 
 export class TooManyAssignmentsError extends Error {}
+
+/** Error thrown when the requested machine accelerator is unavailable. */
+export class AcceleratorUnavailableError extends Error {
+  constructor(readonly requested: string) {
+    super(`Requested accelerator "${requested}" is unavailable`);
+  }
+}
+
 export class DenylistedError extends Error {}
 export class InsufficientQuotaError extends Error {}
 export class NotFoundError extends Error {}

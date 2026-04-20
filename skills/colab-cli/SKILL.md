@@ -90,11 +90,12 @@ colab runtime create --accelerator T4 --runtime-version 2025.10
 colab runtime create --accelerator L4 --shape high-ram
 colab runtime create --accelerator T4 --kernel r
 colab runtime list
+colab runtime resources --endpoint <endpoint>
 colab runtime restart --endpoint <endpoint>
 colab runtime destroy --endpoint <endpoint>
 ```
 
-Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `--kernel` to select a non-default kernel (`r` for R, `julia` for Julia). Use `list` whenever endpoint selection matters.
+Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `--kernel` to select a non-default kernel (`r` for R, `julia` for Julia). Use `resources` to check RAM, disk and GPU usage of a running runtime. Use `list` whenever endpoint selection matters.
 
 ### Usage
 

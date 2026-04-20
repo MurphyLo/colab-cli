@@ -16,6 +16,7 @@ import {
   listRuntimeVersionsCommand,
   destroyRuntimeCommand,
   restartRuntimeCommand,
+  resourcesCommand,
 } from './commands/runtime.js';
 import {
   execCommand,
@@ -221,6 +222,15 @@ runtime
   .action(async (opts) => {
     await ensureLoggedIn();
     await restartRuntimeCommand(runtimeManager, opts.endpoint);
+  });
+
+runtime
+  .command('resources')
+  .description('show RAM, disk and GPU usage of a runtime')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .action(async (opts) => {
+    await ensureLoggedIn();
+    await resourcesCommand(runtimeManager, colabClient, opts.endpoint);
   });
 
 // Usage command

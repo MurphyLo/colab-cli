@@ -127,14 +127,19 @@ export const ConsumptionUserInfoSchema = UserInfoSchema.required({
   assignmentsCount: z.number(),
   freeCcuQuotaInfo: z
     .object({
+      // Is only defined when there is no paid CCU balance remaining.
       remainingTokens: z
         .string()
+        .optional()
         .refine(
-          (val) => Number.isSafeInteger(Number(val)),
+          (val) => {
+            if (val === undefined) return true;
+            return Number.isSafeInteger(Number(val));
+          },
           { message: 'Value too large to be a safe integer for JavaScript' },
         )
-        .transform((val) => Number(val)),
-      nextRefillTimestampSec: z.number(),
+        .transform((val) => (val !== undefined ? Number(val) : undefined)),
+      nextRefillTimestampSec: z.number().optional(),
     })
     .optional(),
 });
@@ -275,6 +280,70 @@ export const CredentialsPropagationResultSchema = z
     unauthorizedRedirectUri: unauthorized_redirect_uri,
   }));
 export type CredentialsPropagationResult = z.infer<typeof CredentialsPropagationResultSchema>;
+
+/** Information about memory usage on a Colab runtime. */
+export const MemorySchema = z
+  .object({
+    totalBytes: z.number().optional(),
+    freeBytes: z.number().optional(),
+  })
+  .transform(({ totalBytes, freeBytes }) => ({
+    totalBytes: totalBytes ?? 0,
+    freeBytes: freeBytes ?? 0,
+  }));
+export type Memory = z.infer<typeof MemorySchema>;
+
+/** Information about a GPU on a Colab runtime. */
+export const GpuInfoSchema = z
+  .object({
+    name: z.string().optional(),
+    memoryUsedBytes: z.number().optional(),
+    memoryTotalBytes: z.number().optional(),
+    gpuUtilization: z.number().optional(),
+    memoryUtilization: z.number().optional(),
+    everUsed: z.boolean().optional(),
+  })
+  .transform(({ memoryUsedBytes, memoryTotalBytes, ...rest }) => ({
+    ...rest,
+    memoryUsedBytes: memoryUsedBytes ?? 0,
+    memoryTotalBytes: memoryTotalBytes ?? 0,
+  }));
+export type GpuInfo = z.infer<typeof GpuInfoSchema>;
+
+/** Information about a filesystem on a Colab runtime. */
+export const FilesystemSchema = z
+  .object({
+    label: z.string().optional(),
+    totalBytes: z.number().optional(),
+    usedBytes: z.number().optional(),
+  })
+  .transform(({ totalBytes, usedBytes, ...rest }) => ({
+    ...rest,
+    totalBytes: totalBytes ?? 0,
+    usedBytes: usedBytes ?? 0,
+  }));
+export type Filesystem = z.infer<typeof FilesystemSchema>;
+
+/** Information about a disk on a Colab runtime. */
+export const DiskSchema = z.object({
+  filesystem: FilesystemSchema.optional().transform(
+    (filesystem) => filesystem ?? { totalBytes: 0, usedBytes: 0 },
+  ),
+});
+export type Disk = z.infer<typeof DiskSchema>;
+
+/** The schema for resources (RAM, disk, GPU) on a Colab runtime. */
+export const ResourcesSchema = z.object({
+  memory: MemorySchema.optional().transform(
+    (memory) => memory ?? { totalBytes: 0, freeBytes: 0 },
+  ),
+  disks: z.array(DiskSchema),
+  gpus: z
+    .array(GpuInfoSchema)
+    .optional()
+    .transform((val) => val ?? []),
+});
+export type Resources = z.infer<typeof ResourcesSchema>;
 
 export function variantToMachineType(variant: Variant): string {
   switch (variant) {

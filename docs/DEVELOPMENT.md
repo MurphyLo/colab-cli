@@ -80,7 +80,7 @@ colab-cli/
 │   │
 │   ├── commands/                    # CLI 命令实现
 │   │   ├── auth.ts                  # login / status / logout
-│   │   ├── runtime.ts               # create / list / destroy / restart
+│   │   ├── runtime.ts               # create / list / destroy / restart / resources
 │   │   ├── exec.ts                  # 代码执行（通过守护进程）
 │   │   ├── shell.ts                 # 交互式终端：open / attach / list / send
 │   │   ├── fs.ts                    # 文件系统操作：upload / download
@@ -335,6 +335,7 @@ ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `f
 |---|---|
 | `runtime create` | `RuntimeManager.create()` 调用 `startDaemon(serverId)` |
 | `exec` | `DaemonClient.connect()` 检测守护进程是否运行，未运行则自动 `startDaemon()` |
+| `runtime resources` | `ColabClient.getResources(proxyUrl, token)` 查询 runtime 的 RAM / 磁盘 / GPU 使用情况 |
 | `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel。重启期间 `KernelConnection.isRestarting` 为 `true` |
 | `runtime destroy` | `RuntimeManager.destroy()` 调用 `stopDaemon(serverId)`（协议优先：发 `shutdown` 让守护进程自清理；socket 不可达或 5s 内未退出时回退 SIGTERM），然后 unassign |
 | Kernel WebSocket 断开 | 守护进程**继续运行**。`KernelConnection` 自动重连（指数退避，最多 5 次）；重连期间 `isReconnecting` 为 true，exec 返回 "retry in a few seconds"；放弃后返回 `exec_error`。shell / port-forward 不受影响 |

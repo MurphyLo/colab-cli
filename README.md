@@ -5,7 +5,7 @@ A terminal-first CLI for Google Colab — create runtimes, execute Python on GPU
 This tool supports:
 
 - **`colab auth`** / **`colab usage`** — Manage Google OAuth login, sessions, check subscription/CCU usage
-- **`colab runtime`** — List available options, create, destroy, and restart runtimes
+- **`colab runtime`** — List available options, create, destroy, restart runtimes, and check resource usage
 - **`colab exec`** — Execute Python code with full terminal I/O, streaming output, and background mode
 - **`colab shell`** — Interactive terminal sessions with attach/detach and background mode
 - **`colab port-forward`** — Forward runtime ports to your local machine via HTTP/WebSocket proxy
@@ -59,6 +59,7 @@ colab runtime create --accelerator T4 --kernel r                  # R kernel
 
 ```bash
 colab runtime list                       # list active runtimes
+colab runtime resources                  # show RAM, disk and GPU usage
 colab runtime destroy --endpoint <ep>    # destroy a runtime
 colab runtime restart --endpoint <ep>    # restart kernel without destroying the VM
 ```

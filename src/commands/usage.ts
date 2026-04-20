@@ -25,8 +25,12 @@ export async function usageCommand(colabClient: ColabClient): Promise<void> {
         result.paidComputeUnitsBalance = info.paidComputeUnitsBalance;
       } else if (info.freeCcuQuotaInfo) {
         result.freeCcuQuotaInfo = {
-          remainingCcu: info.freeCcuQuotaInfo.remainingTokens / 1000,
-          nextRefillDate: new Date(info.freeCcuQuotaInfo.nextRefillTimestampSec * 1000).toISOString(),
+          remainingCcu: info.freeCcuQuotaInfo.remainingTokens != null
+            ? info.freeCcuQuotaInfo.remainingTokens / 1000
+            : undefined,
+          nextRefillDate: info.freeCcuQuotaInfo.nextRefillTimestampSec != null
+            ? new Date(info.freeCcuQuotaInfo.nextRefillTimestampSec * 1000).toISOString()
+            : undefined,
         };
       }
       jsonResult(result);
@@ -40,10 +44,14 @@ export async function usageCommand(colabClient: ColabClient): Promise<void> {
     if (info.subscriptionTier !== SubscriptionTier.NONE) {
       console.log(`  Paid CCU balance:  ${chalk.green(info.paidComputeUnitsBalance.toFixed(4))} CCU`);
     } else if (info.freeCcuQuotaInfo) {
-      const remainingCcu = (info.freeCcuQuotaInfo.remainingTokens / 1000).toFixed(4);
-      const refillDate = new Date(info.freeCcuQuotaInfo.nextRefillTimestampSec * 1000).toLocaleString();
-      console.log(`  Free CCU remaining: ${chalk.green(remainingCcu)} CCU`);
-      console.log(`  Next refill:        ${chalk.dim(refillDate)}`);
+      if (info.freeCcuQuotaInfo.remainingTokens != null) {
+        const remainingCcu = (info.freeCcuQuotaInfo.remainingTokens / 1000).toFixed(4);
+        console.log(`  Free CCU remaining: ${chalk.green(remainingCcu)} CCU`);
+      }
+      if (info.freeCcuQuotaInfo.nextRefillTimestampSec != null) {
+        const refillDate = new Date(info.freeCcuQuotaInfo.nextRefillTimestampSec * 1000).toLocaleString();
+        console.log(`  Next refill:        ${chalk.dim(refillDate)}`);
+      }
     }
 
     console.log('');

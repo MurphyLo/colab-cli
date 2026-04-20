@@ -19,6 +19,7 @@ export async function createRuntimeCommand(
     accelerator?: string;
     shape?: string;
     runtimeVersion?: string;
+    kernel?: string;
   },
 ): Promise<void> {
   const selection = parseAcceleratorSelection(options.accelerator);
@@ -43,8 +44,9 @@ export async function createRuntimeCommand(
   }
 
   const versionLabel = options.runtimeVersion || undefined;
+  const kernelName = parseKernelName(options.kernel);
   const spinner = createSpinner(
-    `Creating ${variantToMachineType(variant)} runtime${versionLabel ? ` (version ${versionLabel})` : ''}...`,
+    `Creating ${variantToMachineType(variant)} runtime${versionLabel ? ` (version ${versionLabel})` : ''}${kernelName !== 'python3' ? ` [${kernelDisplayName(kernelName)}]` : ''}...`,
   ).start();
   try {
     const server = await runtimeManager.create({
@@ -52,17 +54,45 @@ export async function createRuntimeCommand(
       accelerator: selection.accelerator,
       shape,
       version: versionLabel,
+      kernelName,
     });
     if (isJsonMode()) {
-      jsonResult({ command: 'runtime.create', label: server.label, endpoint: server.endpoint });
+      jsonResult({ command: 'runtime.create', label: server.label, endpoint: server.endpoint, kernelName });
     } else {
       spinner.succeed(
-        `Runtime created: ${server.label} (endpoint: ${server.endpoint})`,
+        `Runtime created: ${server.label} (endpoint: ${server.endpoint})${kernelName !== 'python3' ? ` [${kernelDisplayName(kernelName)}]` : ''}`,
       );
     }
   } catch (err) {
     spinner.fail('Failed to create runtime');
     throw err;
+  }
+}
+
+function parseKernelName(kernel: string | undefined): string {
+  if (!kernel) return 'python3';
+  const normalized = kernel.trim().toLowerCase();
+  switch (normalized) {
+    case 'python3':
+      return 'python3';
+    case 'r':
+      return 'r';
+    case 'julia':
+      return 'julia';
+    default:
+      console.error(
+        `Unknown kernel: ${kernel}. Use one of: python3, r, julia.`,
+      );
+      process.exit(1);
+  }
+}
+
+function kernelDisplayName(kernelName: string): string {
+  switch (kernelName) {
+    case 'python3': return 'Python 3';
+    case 'r': return 'R';
+    case 'julia': return 'Julia';
+    default: return kernelName;
   }
 }
 

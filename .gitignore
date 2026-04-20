@@ -16,3 +16,6 @@ AGENTS.md
 
 docs/error-records/*
 !docs/error-records/.gitkeep
+
+.firecrawl/
+scripts/

@@ -20,6 +20,7 @@ const StoredServerSchema = z.object({
   token: z.string(),
   tokenExpiry: z.coerce.date(),
   dateAssigned: z.coerce.date(),
+  kernelName: z.string().optional().default('python3'),
 });
 
 export type StoredServer = z.infer<typeof StoredServerSchema>;

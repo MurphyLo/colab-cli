@@ -47,6 +47,7 @@ When reproducing a project, running an unvalidated script, or otherwise executin
 
 - Runtime accelerators use Colab UI names such as `CPU`, `T4`, `A100`, `L4`, `G4`, `H100`, `v6e-1`, and `v5e-1`.
 - Shapes use `standard` or `high-ram`. Some accelerators are high-RAM-only; if unsure, omit `--shape` or check `colab runtime available`.
+- Kernel types: `python3` (default), `r`, `julia`. Use `--kernel` with `create` to select a non-default kernel.
 
 ## JSON Output (`--json`)
 
@@ -87,12 +88,13 @@ colab runtime create --accelerator CPU
 colab runtime create --accelerator T4 --shape standard
 colab runtime create --accelerator T4 --runtime-version 2025.10
 colab runtime create --accelerator L4 --shape high-ram
+colab runtime create --accelerator T4 --kernel r
 colab runtime list
 colab runtime restart --endpoint <endpoint>
 colab runtime destroy --endpoint <endpoint>
 ```
 
-Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `list` whenever endpoint selection matters.
+Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `--kernel` to select a non-default kernel (`r` for R, `julia` for Julia). Use `list` whenever endpoint selection matters.
 
 ### Usage
 

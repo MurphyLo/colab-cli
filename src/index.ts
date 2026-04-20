@@ -169,6 +169,10 @@ runtime
     '-v, --runtime-version <version>',
     'runtime version label (e.g. 2026.01). See `colab runtime versions`.',
   )
+  .option(
+    '-k, --kernel <kernel>',
+    'kernel type: python3 (default), r, or julia',
+  )
   .action(async (opts) => {
     await ensureLoggedIn();
     await createRuntimeCommand(runtimeManager, opts);

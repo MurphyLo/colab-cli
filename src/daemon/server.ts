@@ -307,6 +307,7 @@ async function main() {
     () => refresher.token,
     colabClient,
     server.endpoint,
+    server.kernelName ?? 'python3',
     requestEphemeralAuth,
   );
 

@@ -54,6 +54,7 @@ colab runtime create --accelerator CPU
 colab runtime create --accelerator T4 --shape standard
 colab runtime create --accelerator v6e-1 --shape high-ram
 colab runtime create --accelerator T4 --runtime-version 2025.10   # pin to specific version
+colab runtime create --accelerator T4 --kernel r                  # R kernel
 ```
 
 ```bash

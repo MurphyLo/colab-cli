@@ -98,6 +98,7 @@ export class KernelConnection {
     private readonly getToken: () => string,
     private readonly colabClient: ColabClient,
     private readonly endpoint: string,
+    private readonly kernelName: string = 'python3',
     private readonly requestEphemeralAuth?: (authType: AuthType) => Promise<void>,
   ) {
     this.clientSessionId = uuid();
@@ -117,12 +118,14 @@ export class KernelConnection {
 
   async connect(): Promise<void> {
     // Create a session which gives us a kernel
+    // Map user-facing kernel names to Jupyter kernelspec names
+    const kernelSpecName = this.kernelName === 'r' ? 'ir' : this.kernelName;
     const session = await this.jupyterClient.sessions.create({
       session: {
         name: 'colab-cli',
         path: '/colab-cli',
         type: 'console',
-        kernel: { id: '', name: 'python3' },
+        kernel: { id: '', name: kernelSpecName },
       },
     });
 
@@ -174,7 +177,15 @@ export class KernelConnection {
   }
 
   async restartKernel(): Promise<void> {
-    if (!this.kernelId) return;
+    if (!this.kernelId) {
+      // No kernel session means initial connect() never succeeded or the
+      // session was never established. Treat as a hard error so callers
+      // (daemon → client → CLI spinner) can't report false success.
+      throw new Error(
+        'No kernel session to restart — initial kernel connect did not complete. ' +
+        'Run `colab runtime list` to confirm the runtime is still alive; if not, recreate it.',
+      );
+    }
 
     this.cancelReconnect();
     this._restarting = true;

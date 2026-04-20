@@ -159,6 +159,9 @@ export class DaemonClient {
     if (msg.type === 'restart_error') {
       throw new Error(msg.message);
     }
+    if (msg.type !== 'restarted') {
+      throw new Error(`Unexpected response to restart: ${msg.type}`);
+    }
   }
 
   interrupt(): void {

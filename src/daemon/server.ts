@@ -11,7 +11,8 @@ import { ColabClient, ColabRequestError } from '../colab/client.js';
 import { KernelConnection } from '../jupyter/kernel-connection.js';
 import { KeepAlive } from '../runtime/keep-alive.js';
 import { ConnectionRefresher } from '../runtime/connection-refresher.js';
-import { getStoredServer } from '../runtime/storage.js';
+import { getStoredServer, removeStoredServer } from '../runtime/storage.js';
+import { formatRuntimeReleasedMessage } from '../runtime/release-detection.js';
 import { COLAB_API_DOMAIN, COLAB_GAPI_DOMAIN, CONFIG_DIR } from '../config.js';
 import type { ClientMessage, ServerMessage, ShellStatus } from './protocol.js';
 import { encode } from './protocol.js';
@@ -165,20 +166,6 @@ async function main() {
     () => authManager.logout(),
   );
 
-  // Start background services
-  const keepAlive = new KeepAlive(colabClient, server.endpoint);
-  keepAlive.start();
-
-  const refresher = new ConnectionRefresher(
-    colabClient,
-    server.id,
-    server.endpoint,
-    server.token,
-    server.proxyUrl,
-    server.tokenExpiry,
-  );
-  refresher.start();
-
   const store = new ExecutionStore(serverId);
   const execState: { activeExecution?: ActiveExecution } = {};
   const shellState: {
@@ -189,6 +176,96 @@ async function main() {
     sessions: Map<number, ForwardSession>;
     nextId: number;
   } = { sessions: new Map(), nextId: 1 };
+  let shuttingDown = false;
+  let runtimeReleaseHandled = false;
+  let socketServer: net.Server | undefined;
+
+  const shutdown = (runtimeReleasedMessage?: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    if (runtimeReleasedMessage) {
+      removeStoredServer(server.id);
+
+      const active = execState.activeExecution;
+      if (active) {
+        store.fail(active.execId, runtimeReleasedMessage);
+        if (active.pendingStdinResolve) {
+          active.pendingStdinResolve(undefined);
+          active.pendingStdinResolve = undefined;
+        }
+        if (active.pendingAuthInterruptResolve) {
+          active.pendingAuthInterruptResolve();
+          active.pendingAuthInterruptResolve = undefined;
+        }
+        for (const resolve of active.pendingAuthRequests.values()) {
+          resolve(runtimeReleasedMessage);
+        }
+        active.pendingAuthRequests.clear();
+        if (active.attachedSocket && !active.attachedSocket.destroyed) {
+          active.attachedSocket.end(encode({ type: 'exec_error', message: runtimeReleasedMessage }));
+        }
+        execState.activeExecution = undefined;
+      }
+
+      for (const shell of shellState.shells.values()) {
+        shell.status = 'closed';
+        if (shell.attachedSocket && !shell.attachedSocket.destroyed) {
+          shell.attachedSocket.end(
+            encode({
+              type: 'shell_closed',
+              shellId: shell.shellId,
+              reason: runtimeReleasedMessage,
+            }),
+          );
+        }
+      }
+    }
+
+    console.log('Shutting down daemon');
+    for (const shell of shellState.shells.values()) {
+      shell.connection.close();
+    }
+    shellState.shells.clear();
+    for (const session of forwardState.sessions.values()) {
+      session.close().catch(() => {});
+    }
+    forwardState.sessions.clear();
+    kernel.close();
+    keepAlive.stop();
+    refresher.stop();
+    socketServer?.close();
+    cleanupFiles();
+    process.exit(0);
+  };
+
+  const handleRuntimeReleased = async (
+    source: 'connection-refresh' | 'keep-alive',
+    error: ColabRequestError,
+  ): Promise<void> => {
+    if (runtimeReleaseHandled || shuttingDown) return;
+    runtimeReleaseHandled = true;
+    console.error(
+      `Runtime release detected: source=${source} endpoint=${server.endpoint} status=${error.status}`,
+    );
+    shutdown(formatRuntimeReleasedMessage(server.endpoint));
+  };
+
+  const keepAlive = new KeepAlive(
+    colabClient,
+    server.endpoint,
+    (error) => handleRuntimeReleased('keep-alive', error),
+  );
+
+  const refresher = new ConnectionRefresher(
+    colabClient,
+    server.id,
+    server.endpoint,
+    server.token,
+    server.proxyUrl,
+    server.tokenExpiry,
+    (error) => handleRuntimeReleased('connection-refresh', error),
+  );
 
   const propagateCredentialsOrThrow = async (authType: AuthType): Promise<void> => {
     const result = await colabClient.propagateCredentials(server.endpoint, {
@@ -399,7 +476,7 @@ async function main() {
   }
 
   // Start Unix socket server early so CLI detects daemon quickly
-  const socketServer = net.createServer((socket) =>
+  socketServer = net.createServer((socket) =>
     handleClient(
       socket,
       kernel,
@@ -424,27 +501,10 @@ async function main() {
   fs.writeFileSync(PID_FILE, String(process.pid));
   console.log('Daemon ready on', SOCKET_PATH);
 
-  // Shutdown handler
-  const shutdown = () => {
-    console.log('Shutting down daemon');
-    for (const shell of shellState.shells.values()) {
-      shell.connection.close();
-    }
-    shellState.shells.clear();
-    for (const session of forwardState.sessions.values()) {
-      session.close().catch(() => {});
-    }
-    forwardState.sessions.clear();
-    kernel.close();
-    keepAlive.stop();
-    refresher.stop();
-    socketServer.close();
-    cleanupFiles();
-    process.exit(0);
-  };
-
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  keepAlive.start();
+  refresher.start();
 
   // The daemon stays alive as long as the socket server runs. Kernel failure
   // is handled per-exec via `await kernelReady` in runExecution; shell and

@@ -47,14 +47,7 @@ async function resolveServer(
   runtimeManager: RuntimeManager,
   endpoint: string | undefined,
 ) {
-  const server = endpoint
-    ? runtimeManager.getServerByEndpoint(endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
-    process.exit(1);
-  }
-  return server;
+  return runtimeManager.resolveTarget(endpoint);
 }
 
 export async function portForwardCreateCommand(

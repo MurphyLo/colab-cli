@@ -277,14 +277,7 @@ export async function destroyRuntimeCommand(
   endpoint?: string,
 ): Promise<void> {
   if (!endpoint) {
-    // Use latest server
-    const server = runtimeManager.getLatestServer();
-    if (!server) {
-      console.error(
-        'No runtime to destroy. Specify --endpoint or create one first.',
-      );
-      process.exit(1);
-    }
+    const server = await runtimeManager.resolveTarget();
     endpoint = server.endpoint;
   }
 
@@ -306,13 +299,7 @@ export async function restartRuntimeCommand(
   runtimeManager: RuntimeManager,
   endpoint?: string,
 ): Promise<void> {
-  const server = endpoint
-    ? runtimeManager.getServerByEndpoint(endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
-    process.exit(1);
-  }
+  const server = await runtimeManager.resolveTarget(endpoint);
 
   const spinner = createSpinner('Restarting kernel...').start();
   const client = new DaemonClient();
@@ -396,13 +383,7 @@ export async function resourcesCommand(
   colabClient: ColabClient,
   endpoint?: string,
 ): Promise<void> {
-  const server = endpoint
-    ? runtimeManager.getServerByEndpoint(endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
-    process.exit(1);
-  }
+  const server = await runtimeManager.resolveTarget(endpoint);
 
   const spinner = createSpinner('Fetching runtime resources...').start();
   try {

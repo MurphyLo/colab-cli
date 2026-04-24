@@ -37,17 +37,7 @@ export async function driveMountCommand(
     process.exit(1);
   }
 
-  const server = endpoint
-    ? runtimeManager.getServerByEndpoint(endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    if (isJsonMode()) {
-      jsonError('No runtime found. Create one first with `colab runtime create`.');
-    } else {
-      console.error('No runtime found. Create one first with `colab runtime create`.');
-    }
-    process.exit(1);
-  }
+  const server = await runtimeManager.resolveTarget(endpoint);
 
   const spinner = createSpinner('Connecting to daemon...').start();
   const client = new DaemonClient();

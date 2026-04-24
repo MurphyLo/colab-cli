@@ -8,18 +8,11 @@ import { type ConnectionProvider, chooseStrategy, formatBytes } from '../transfe
 import { uploadFile, type UploadProgressEvent } from '../transfer/upload.js';
 import { downloadFile, type DownloadProgressEvent } from '../transfer/download.js';
 
-function resolveServer(
+async function resolveServer(
   runtimeManager: RuntimeManager,
   endpoint?: string,
-): StoredServer {
-  const server = endpoint
-    ? runtimeManager.getServerByEndpoint(endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
-    process.exit(1);
-  }
-  return server;
+): Promise<StoredServer> {
+  return runtimeManager.resolveTarget(endpoint);
 }
 
 function makeConnectionProvider(server: StoredServer): ConnectionProvider {
@@ -63,7 +56,7 @@ export async function fsUploadCommand(
     process.exit(1);
   }
 
-  const server = resolveServer(runtimeManager, options.endpoint);
+  const server = await resolveServer(runtimeManager, options.endpoint);
   const conn = makeConnectionProvider(server);
   const strategy = chooseStrategy(stat.size);
 
@@ -125,7 +118,7 @@ export async function fsDownloadCommand(
   runtimeManager: RuntimeManager,
   options: { remotePath: string; localPath?: string; endpoint?: string },
 ): Promise<void> {
-  const server = resolveServer(runtimeManager, options.endpoint);
+  const server = await resolveServer(runtimeManager, options.endpoint);
   const conn = makeConnectionProvider(server);
 
   // We don't know the file size yet (need metadata first), so always prepare daemon.

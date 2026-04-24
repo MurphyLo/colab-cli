@@ -21,6 +21,43 @@ import {
 export class RuntimeManager {
   constructor(private readonly colabClient: ColabClient) {}
 
+  async resolveTarget(endpoint?: string): Promise<StoredServer> {
+    if (endpoint) {
+      const server = this.getServerByEndpoint(endpoint);
+      if (!server) {
+        throw new Error(
+          `No local record for endpoint ${endpoint}. Run \`colab runtime list\` to see active runtimes.`,
+        );
+      }
+      return server;
+    }
+
+    const server = this.getLatestServer();
+    if (!server) {
+      throw new Error(
+        'No runtime found. Create one first with `colab runtime create`.',
+      );
+    }
+
+    const assignments = await this.list();
+    if (assignments.some((a) => a.endpoint === server.endpoint)) {
+      return server;
+    }
+
+    await stopDaemon(server.id);
+    removeStoredServer(server.id);
+
+    const active = assignments.map((a) => a.endpoint);
+    if (active.length === 0) {
+      throw new Error(
+        `Runtime ${server.endpoint} is no longer active (stale local record removed). No active runtimes — create one with \`colab runtime create\`.`,
+      );
+    }
+    throw new Error(
+      `Runtime ${server.endpoint} is no longer active (stale local record removed). Active runtimes: ${active.join(', ')}. Use --endpoint to specify.`,
+    );
+  }
+
   async create(options: {
     variant: Variant;
     accelerator?: string;

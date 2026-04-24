@@ -343,7 +343,9 @@ ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `f
 | kernel 崩溃（segfault、`os._exit`） | Colab 自动重启 kernel → 新 kernel 发送 `status: starting` → `KernelConnection.handleMessage()` 检测到后 abort 活跃的 `executeAndStream` generator → `runExecution()` catch 调用 `store.fail()` → `crashed` 状态。参见 §4.7 |
 | 系统重启 | `.pid` / `.sock` 文件残留。`isDaemonRunning()` 以 socket 可达性为判据返回 false → `startDaemon()` spawn 新守护进程 → `claimSocket()` 发现 socket 文件为 stale 后 unlink 并 listen |
 
-**何时退出**：守护进程仅在以下场景退出：(1) 收到 SIGTERM/SIGINT；(2) auth 不可用或目标 server 不存在（启动期）；(3) 启动时 socket 已被另一守护进程占用。kernel 失败、kernel WebSocket 断开、单个 shell 关闭都不会触发退出。
+**何时退出**：守护进程仅在以下场景退出：(1) 收到 SIGTERM/SIGINT；(2) auth 不可用或目标 server 不存在（启动期）；(3) 启动时 socket 已被另一守护进程占用；(4) `ConnectionRefresher` 或 `KeepAlive` 收到 404 NOT_FOUND（runtime 被后端回收），此时删除本地 server 记录并退出。kernel 失败、kernel WebSocket 断开、单个 shell 关闭都不会触发退出。
+
+**命令目标选择**：所有需要 runtime 目标的命令（exec、shell、port-forward、fs、runtime destroy/restart/resources、drive-mount）通过 `RuntimeManager.resolveTarget(endpoint?)` 统一选择目标。显式传入 `--endpoint` 时只查本地 `servers.json`；省略时取最新本地记录后向后端 `listAssignments()` 校验，如目标已不存在则清理 stale 本地记录并报错。
 
 ### 3.7 KernelConnection 的动态 URL
 
@@ -417,6 +419,8 @@ runtime-manager.ts: create()
 
 ```
 exec.ts: execCommand()
+  → RuntimeManager.resolveTarget(endpoint?)
+      无 --endpoint 时：getLatestServer() + listAssignments() 校验
   → DaemonClient.connect(serverId)
       1. 检查守护进程是否运行（PID 文件 + kill -0）
       2. 未运行则 startDaemon() 自动启动

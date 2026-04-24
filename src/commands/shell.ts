@@ -31,13 +31,7 @@ export async function shellCommand(
     background?: boolean;
   },
 ): Promise<void> {
-  const server = options.endpoint
-    ? runtimeManager.getServerByEndpoint(options.endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
-    process.exit(1);
-  }
+  const server = await runtimeManager.resolveTarget(options.endpoint);
 
   const spinner = createSpinner('Connecting to shell...').start();
   const client = new DaemonClient();
@@ -89,13 +83,7 @@ export async function shellAttachCommand(
     tail?: number;
   },
 ): Promise<void> {
-  const server = options.endpoint
-    ? runtimeManager.getServerByEndpoint(options.endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
-    process.exit(1);
-  }
+  const server = await runtimeManager.resolveTarget(options.endpoint);
 
   const client = new DaemonClient();
   await client.connect(server.id);
@@ -137,13 +125,7 @@ export async function shellListCommand(
   runtimeManager: RuntimeManager,
   options: { endpoint?: string },
 ): Promise<void> {
-  const server = options.endpoint
-    ? runtimeManager.getServerByEndpoint(options.endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
-    process.exit(1);
-  }
+  const server = await runtimeManager.resolveTarget(options.endpoint);
 
   const client = new DaemonClient();
   await client.connect(server.id);
@@ -211,13 +193,7 @@ export async function shellSendCommand(
     process.exit(1);
   }
 
-  const server = options.endpoint
-    ? runtimeManager.getServerByEndpoint(options.endpoint)
-    : runtimeManager.getLatestServer();
-  if (!server) {
-    console.error('No runtime found. Create one first with `colab runtime create`.');
-    process.exit(1);
-  }
+  const server = await runtimeManager.resolveTarget(options.endpoint);
 
   const client = new DaemonClient();
   await client.connect(server.id);

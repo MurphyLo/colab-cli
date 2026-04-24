@@ -195,12 +195,15 @@ colab shell send 1 --signal INT
 ```bash
 colab port-forward create 7860
 colab port-forward create 18080:7860
+colab port-forward create 7860 --tls
 colab port-forward list
 colab port-forward close 1
 colab port-forward close --all
 ```
 
 - Use `colab port-forward create <spec>` where `<spec>` is `REMOTE`, `LOCAL:REMOTE`, or `HOST:LOCAL:REMOTE`.
+- Add `--tls` when the local listener needs to serve HTTPS; the CLI uses a cached self-signed certificate.
+- Use `--tls` when binding for LAN access, such as `0.0.0.0:7860` or a non-localhost host, and users need browser features that require a secure context. Browsers generally allow microphone/camera capture on `http://localhost`, but block those APIs on plain-HTTP LAN origins like `http://192.168.x.x:7860`; open the forwarded app as `https://<host>:<port>` and accept or trust the self-signed certificate.
 - `pf` is a shorter alias for `port-forward`.
 - Forwards are HTTP/WebSocket only (L7 reverse proxy through Colab edge infrastructure). Raw TCP protocols (PostgreSQL, Redis, SSH, gRPC) are not supported.
 - The forward runs inside the daemon; `create` returns immediately after the local listener is bound.

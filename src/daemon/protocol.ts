@@ -26,6 +26,7 @@ export type ClientMessage =
       localHost: string;
       localPort: number;
       remotePort: number;
+      tls?: boolean;
     }
   | { type: 'port_forward_list' }
   | { type: 'port_forward_close'; id?: number; all?: boolean };
@@ -66,6 +67,7 @@ export type ServerMessage =
       localPort: number;
       remotePort: number;
       proxyUrl: string;
+      tls: boolean;
     }
   | { type: 'port_forward_list_result'; sessions: PortForwardListEntry[] }
   | { type: 'port_forward_closed'; ids: number[] }
@@ -91,6 +93,7 @@ export interface PortForwardListEntry {
   remotePort: number;
   startedAt: string;
   proxyUrl: string;
+  tls: boolean;
 }
 
 export type { ExecStatus, ExecListEntry };

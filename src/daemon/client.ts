@@ -255,14 +255,22 @@ export class DaemonClient {
     localHost: string,
     localPort: number,
     remotePort: number,
+    tls?: boolean,
   ): Promise<{
     id: number;
     localHost: string;
     localPort: number;
     remotePort: number;
     proxyUrl: string;
+    tls: boolean;
   }> {
-    this.send({ type: 'port_forward_create', localHost, localPort, remotePort });
+    this.send({
+      type: 'port_forward_create',
+      localHost,
+      localPort,
+      remotePort,
+      ...(tls ? { tls: true } : {}),
+    });
     const msg = await this.nextMessage();
     if (msg.type === 'port_forward_created') {
       return {
@@ -271,6 +279,7 @@ export class DaemonClient {
         localPort: msg.localPort,
         remotePort: msg.remotePort,
         proxyUrl: msg.proxyUrl,
+        tls: msg.tls,
       };
     }
     if (msg.type === 'port_forward_error') throw new Error(msg.message);

@@ -1,12 +1,17 @@
 import http from 'http';
+import https from 'https';
 import net from 'net';
 import httpProxy from 'http-proxy';
 import { COLAB_CLIENT_AGENT_HEADER, COLAB_RUNTIME_PROXY_TOKEN_HEADER } from '../colab/headers.js';
 import { log } from '../logging/index.js';
 import { getProxyAgent } from '../utils/proxy.js';
 import { PortTokenRefresher } from './token-refresher.js';
+import type { TlsCredentials } from './tls.js';
 
-export function createForwarder(refresher: PortTokenRefresher): http.Server {
+export function createForwarder(
+  refresher: PortTokenRefresher,
+  tls?: TlsCredentials,
+): http.Server | https.Server {
   const proxy = httpProxy.createProxyServer({
     changeOrigin: true,
     ws: true,
@@ -51,23 +56,29 @@ export function createForwarder(refresher: PortTokenRefresher): http.Server {
     }
   };
 
+  const localScheme = tls ? 'https' : 'http';
+
   // Rewrite Access-Control-Allow-Origin in responses so the browser's CORS
   // check passes (upstream echoes the Colab proxy origin, not localhost).
   proxy.on('proxyRes', (proxyRes, req) => {
     const acao = proxyRes.headers['access-control-allow-origin'];
     if (acao && acao.includes(proxyOrigin)) {
       proxyRes.headers['access-control-allow-origin'] =
-        `http://${req.headers.host ?? 'localhost'}`;
+        `${localScheme}://${req.headers.host ?? 'localhost'}`;
     }
   });
 
-  const server = http.createServer((req, res) => {
+  const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
     rewriteRequestHeaders(req);
     proxy.web(req, res, {
       target: refresher.proxyUrl,
       headers: buildHeaders(),
     });
-  });
+  };
+
+  const server = tls
+    ? https.createServer({ cert: tls.cert, key: tls.key }, handler)
+    : http.createServer(handler);
 
   server.on('upgrade', (req, socket, head) => {
     rewriteRequestHeaders(req);

@@ -60,7 +60,7 @@ async function resolveServer(
 export async function portForwardCreateCommand(
   runtimeManager: RuntimeManager,
   spec: string,
-  options: { endpoint?: string },
+  options: { endpoint?: string; tls?: boolean },
 ): Promise<void> {
   const { localHost, localPort, remotePort } = parseSpec(spec);
   const server = await resolveServer(runtimeManager, options.endpoint);
@@ -68,7 +68,7 @@ export async function portForwardCreateCommand(
   const client = new DaemonClient();
   await client.connect(server.id);
   try {
-    const result = await client.portForwardCreate(localHost, localPort, remotePort);
+    const result = await client.portForwardCreate(localHost, localPort, remotePort, options.tls);
     if (isJsonMode()) {
       jsonResult({
         id: result.id,
@@ -76,9 +76,11 @@ export async function portForwardCreateCommand(
         localPort: result.localPort,
         remotePort: result.remotePort,
         proxyUrl: result.proxyUrl,
+        tls: result.tls,
       });
     } else {
-      console.log(`[#${result.id}] bind ${result.localHost}:${result.localPort} → runtime:${result.remotePort}`);
+      const scheme = result.tls ? 'https' : 'http';
+      console.log(`[#${result.id}] bind ${scheme}://${result.localHost}:${result.localPort} → runtime:${result.remotePort}`);
       console.log(`proxy: ${result.proxyUrl}`);
     }
   } finally {
@@ -103,11 +105,11 @@ export async function portForwardListCommand(
       console.log('No port forwards.');
       return;
     }
-    console.log('ID\tHOST\tLOCAL\tREMOTE\tSTARTED\t\t\tPROXY_URL');
+    console.log('ID\tHOST\tLOCAL\tREMOTE\tTLS\tSTARTED\t\t\tPROXY_URL');
     for (const s of sessions) {
       const started = new Date(s.startedAt).toLocaleString();
       console.log(
-        `${s.id}\t${s.localHost}\t${s.localPort}\t${s.remotePort}\t${started}\t${s.proxyUrl}`,
+        `${s.id}\t${s.localHost}\t${s.localPort}\t${s.remotePort}\t${s.tls ? 'yes' : 'no'}\t${started}\t${s.proxyUrl}`,
       );
     }
   } finally {

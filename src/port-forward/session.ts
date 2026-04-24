@@ -1,10 +1,13 @@
 import http from 'http';
+import https from 'https';
 import { ColabClient } from '../colab/client.js';
 import { createForwarder } from './forwarder.js';
 import { PortTokenRefresher } from './token-refresher.js';
+import type { TlsCredentials } from './tls.js';
 
 export class ForwardSession {
   readonly startedAt = new Date();
+  readonly tls: boolean;
 
   private constructor(
     readonly id: number,
@@ -12,8 +15,10 @@ export class ForwardSession {
     readonly localPort: number,
     readonly remotePort: number,
     private readonly refresher: PortTokenRefresher,
-    private readonly server: http.Server,
-  ) {}
+    private readonly server: http.Server | https.Server,
+  ) {
+    this.tls = server instanceof https.Server;
+  }
 
   get proxyUrl(): string {
     return this.refresher.proxyUrl;
@@ -26,11 +31,12 @@ export class ForwardSession {
     remotePort: number,
     colabClient: ColabClient,
     endpoint: string,
+    tls?: TlsCredentials,
   ): Promise<ForwardSession> {
     const refresher = new PortTokenRefresher(colabClient, endpoint, remotePort);
     await refresher.start();
 
-    const server = createForwarder(refresher);
+    const server = createForwarder(refresher, tls);
     try {
       await new Promise<void>((resolve, reject) => {
         const onError = (err: Error) => {

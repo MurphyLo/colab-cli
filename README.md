@@ -179,6 +179,7 @@ Forward a runtime port to your local machine via an HTTP/WebSocket reverse proxy
 colab port-forward create 7860                 # REMOTE (binds 127.0.0.1 by default)
 colab port-forward create 18080:7860           # LOCAL:REMOTE
 colab port-forward create 0.0.0.0:18080:7860   # HOST:LOCAL:REMOTE
+colab port-forward create 7860 --tls           # serve the local listener over HTTPS
 colab port-forward list
 colab port-forward close 1
 colab port-forward close --all
@@ -187,6 +188,7 @@ colab port-forward close --all
 `pf` is a shorter alias for `port-forward`.
 
 - HTTP and WebSocket only — raw TCP (PostgreSQL, Redis, SSH, gRPC) is not supported.
+- Add `--tls` to serve the local listener over HTTPS with a cached self-signed certificate.
 - Forwards live as long as the daemon; a destroyed runtime or killed daemon clears all forwards.
 
 ### File Transfer

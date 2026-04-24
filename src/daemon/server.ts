@@ -19,6 +19,7 @@ import { ExecutionStore } from './execution-store.js';
 import { TerminalConnection } from '../terminal/terminal-connection.js';
 import { TerminalBuffer } from '../terminal/terminal-buffer.js';
 import { ForwardSession } from '../port-forward/session.js';
+import { getTlsCredentials } from '../port-forward/tls.js';
 
 const serverId = process.argv[2] as UUID;
 if (!serverId) {
@@ -874,6 +875,7 @@ function handleClient(
         }
         const id = forwardState.nextId++;
         try {
+          const tlsCreds = msg.tls ? await getTlsCredentials() : undefined;
           const session = await ForwardSession.open(
             id,
             msg.localHost,
@@ -881,6 +883,7 @@ function handleClient(
             msg.remotePort,
             colabClient,
             endpoint,
+            tlsCreds,
           );
           forwardState.sessions.set(id, session);
           send({
@@ -890,6 +893,7 @@ function handleClient(
             localPort: session.localPort,
             remotePort: session.remotePort,
             proxyUrl: session.proxyUrl,
+            tls: session.tls,
           });
           console.log(
             `Port forward ${id}: ${session.localHost}:${session.localPort} → remote ${session.remotePort}`,
@@ -909,6 +913,7 @@ function handleClient(
           remotePort: s.remotePort,
           startedAt: s.startedAt.toISOString(),
           proxyUrl: s.proxyUrl,
+          tls: s.tls,
         }));
         send({ type: 'port_forward_list_result', sessions });
         break;

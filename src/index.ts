@@ -391,9 +391,10 @@ portForward
     'create a forward; spec is REMOTE, LOCAL:REMOTE, or HOST:LOCAL:REMOTE',
   )
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .option('--tls', 'serve locally over HTTPS with a self-signed certificate')
   .action(async (spec: string, opts) => {
     await ensureLoggedIn();
-    await portForwardCreateCommand(runtimeManager, spec, { endpoint: opts.endpoint });
+    await portForwardCreateCommand(runtimeManager, spec, { endpoint: opts.endpoint, tls: opts.tls });
   });
 
 portForward

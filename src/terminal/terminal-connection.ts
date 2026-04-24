@@ -42,6 +42,7 @@ export interface TerminalConnectionHandlers {
 const RECONNECT_MAX_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const PING_INTERVAL_MS = 30_000;
+const swallowSocketError = () => {};
 
 /**
  * Manages a WebSocket connection to `/colab/tty` for interactive terminal I/O.
@@ -99,10 +100,7 @@ export class TerminalConnection {
     this.stopPing();
     this.pendingMessages = [];
     if (this.ws) {
-      this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN) {
-        this.ws.close();
-      }
+      this.discardSocket(this.ws);
       this.ws = undefined;
     }
   }
@@ -135,8 +133,7 @@ export class TerminalConnection {
 
       const timeout = setTimeout(() => {
         if (this.ws) {
-          this.ws.removeAllListeners();
-          this.ws.close();
+          this.discardSocket(this.ws);
           this.ws = undefined;
         }
         reject(new Error('Terminal WebSocket connection timed out'));
@@ -217,7 +214,7 @@ export class TerminalConnection {
 
       try {
         if (this.ws) {
-          this.ws.removeAllListeners();
+          this.discardSocket(this.ws);
           this.ws = undefined;
         }
         await this.connectWebSocket();
@@ -252,6 +249,19 @@ export class TerminalConnection {
       this._reconnectTimer = undefined;
     }
     this._reconnecting = false;
+  }
+
+  private discardSocket(ws: WebSocket): void {
+    ws.removeAllListeners();
+    ws.on('error', swallowSocketError);
+    if (ws.readyState === WebSocket.CONNECTING) {
+      // Abort a half-open handshake without surfacing an unhandled error.
+      ws.terminate();
+      return;
+    }
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING) {
+      ws.close();
+    }
   }
 
   // ── Keepalive ping ──

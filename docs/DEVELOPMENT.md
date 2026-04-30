@@ -338,7 +338,7 @@ ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `f
 | `runtime resources` | `ColabClient.getResources(proxyUrl, token)` 查询 runtime 的 RAM / 磁盘 / GPU 使用情况 |
 | `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel。重启期间 `KernelConnection.isRestarting` 为 `true` |
 | `runtime destroy` | `RuntimeManager.destroy()` 调用 `stopDaemon(serverId)`（协议优先：发 `shutdown` 让守护进程自清理；socket 不可达或 5s 内未退出时回退 SIGTERM），然后 unassign |
-| Kernel WebSocket 断开 | 守护进程**继续运行**。`KernelConnection` 自动重连（指数退避，最多 5 次）；重连期间 `isReconnecting` 为 true，exec 返回 "retry in a few seconds"；放弃后返回 `exec_error`。shell / port-forward 不受影响 |
+| Kernel WebSocket 断开 | 守护进程**继续运行**。`KernelConnection` 自动重连（指数退避，最多 5 次）。**活跃执行在重连期间不被中止**——重连成功后 iopub 消息通过新 WS 继续流入（messageHandler 仍注册），同时异步探测 kernel 状态：若 kernel 已 idle（执行在断连期间完成），则 abort generator 并报错（exit code 1，因为输出可能不完整）；若 kernel 仍 busy，则执行照常继续。重连全部失败后 abort 并返回 `exec_error`。无活跃执行时，重连期间 exec 返回 "retry in a few seconds"。shell / port-forward 不受影响 |
 | Terminal WebSocket 断开 | 守护进程**继续运行**。`TerminalConnection` 自动重连（指数退避，最多 5 次），成功后重新 `tmux switch-client` 恢复 shell。Shell 在重连期间保持 `running` 状态；仅当所有重试耗尽后才标记为 `closed` |
 | kernel 崩溃（segfault、`os._exit`） | Colab 自动重启 kernel → 新 kernel 发送 `status: starting` → `KernelConnection.handleMessage()` 检测到后 abort 活跃的 `executeAndStream` generator → `runExecution()` catch 调用 `store.fail()` → `crashed` 状态。参见 §4.7 |
 | 系统重启 | `.pid` / `.sock` 文件残留。`isDaemonRunning()` 以 socket 可达性为判据返回 false → `startDaemon()` spawn 新守护进程 → `claimSocket()` 发现 socket 文件为 stale 后 unlink 并 listen |
@@ -610,12 +610,19 @@ Layer 1 — status:starting 检测（主要路径）:
             → runExecution() catch: store.fail(execId, message) → crashed 状态
               → finally: activeExecution = undefined → 允许新执行
 
-Layer 2 — WebSocket close（回退路径）:
+Layer 2 — WebSocket close + reconnect（回退路径）:
 
   WebSocket 连接断开（网络中断等）
-    → ws.on('close') 调用 activeExecutionAbort(new Error('WebSocket closed during execution'))
-      → 同上 generator abort 流程 → crashed 状态
+    → ws.on('close') 不再直接 abort，而是调用 scheduleReconnect()
+      → 重连成功：
+          有活跃执行时，捕获当前 abort 引用后异步探测 waitForKernelReady()
+            → 探测成功（kernel idle，执行已结束）：abort(Error('连接曾中断，输出可能不完整'))
+            → 探测超时（kernel busy，执行仍在进行）：无操作，iopub 继续通过新 WS 流入
+          无活跃执行时，同步 await waitForKernelReady()
+      → 重连失败（5 次耗尽）：abort(Error('reconnect failed')) → crashed 状态
 ```
+
+**race condition 防护**：重连成功路径中，`activeExecutionAbort` 在异步 `waitForKernelReady()` 调用前被捕获到局部变量 `abort`。这防止了"旧执行正常完成 → finally 清除回调 → 新执行注册新回调 → 旧探测 resolve 后误调新回调"的竞态。
 
 **与显式重启的交互**：`restartKernel()` 先 `removeAllListeners()` 再 `close()` → 旧 close handler 不触发。但新 WS 的 `handleMessage()` 检测到 `status: starting` 后仍会 abort 活跃执行，这是正确行为。
 
@@ -625,7 +632,7 @@ Layer 2 — WebSocket close（回退路径）:
 
 | 逻辑 | 来源项目 | 原始位置 | 迁移说明 |
 |------|----------|----------|----------|
-| 连接断开时中止活跃执行 | jupyter-kernel-client | `wsclient.py` `_on_close()` → `connection_ready.clear()` + `execute_interactive()` 检查 `connection_ready.is_set()` | `activeExecutionAbort` 回调模式替代 Event flag，通过 generator queue 传播错误 |
+| 连接断开时处理活跃执行 | jupyter-kernel-client | `wsclient.py` `_on_close()` → `connection_ready.clear()` + `execute_interactive()` 检查 `connection_ready.is_set()` | 不再立即中止：close handler 触发 `scheduleReconnect()`，重连成功后执行继续或探测完成后 abort；重连失败才 abort。通过捕获 `activeExecutionAbort` 引用避免竞态 |
 | kernel 状态监控 | vscode-jupyter | `kernelCrashMonitor.ts` 监控 `status: 'dead'` / `'autorestarting'` | 简化为检测 `status: starting`，因为 Colab 代理不透传 `dead`/`autorestarting` 状态 |
 
 ### 4.8 图片输出保存

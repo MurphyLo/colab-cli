@@ -294,7 +294,25 @@ export class KernelConnection {
           this._reconnecting = false;
           return;
         }
-        await this.waitForKernelReady();
+        if (this.activeExecutionAbort) {
+          // Active execution: don't block on waitForKernelReady — the
+          // kernel_info_request queues behind the running execute_request on
+          // the serial shell channel and would time out for long tasks.
+          // Instead, probe asynchronously: if the kernel is idle (execution
+          // finished during disconnect), the probe resolves and we abort with
+          // a descriptive error (exit code 1 — safe for CI/CD). If busy, it
+          // times out harmlessly — iopub messages flow through the new WS.
+          const abort = this.activeExecutionAbort;
+          this.waitForKernelReady()
+            .then(() => {
+              abort(new Error(
+                'Connection was temporarily lost during execution. Some output may be missing and the final status could not be verified.',
+              ));
+            })
+            .catch(() => {});
+        } else {
+          await this.waitForKernelReady();
+        }
         log.debug(`Kernel WS reconnected (attempt ${attempt})`);
         this._reconnecting = false;
       } catch (err) {
@@ -302,6 +320,12 @@ export class KernelConnection {
         if (attempt >= MAX_ATTEMPTS || this._closed || this._restarting) {
           log.error(`Kernel WS reconnect gave up after ${attempt} attempts`);
           this._reconnecting = false;
+          if (this.activeExecutionAbort) {
+            this.activeExecutionAbort(new Error(
+              'Connection lost and reconnect failed. The remote execution may still be running.',
+            ));
+            this.activeExecutionAbort = undefined;
+          }
           return;
         }
         this._reconnectTimer = setTimeout(tryOnce, BASE_DELAY_MS * 2 ** (attempt - 1));
@@ -357,15 +381,13 @@ export class KernelConnection {
 
       this.ws.on('close', () => {
         log.debug('WebSocket closed');
-        // Abort any active execution generator so runExecution() doesn't hang.
-        // Mirrors jupyter-kernel-client's _on_close → connection_ready.clear().
-        if (this.activeExecutionAbort) {
-          this.activeExecutionAbort(new Error('WebSocket closed during execution'));
-          this.activeExecutionAbort = undefined;
-        }
-        // Auto-reconnect on unexpected disconnect. Guards inside scheduleReconnect
-        // suppress the attempt during intentional close() / restartKernel() or when
-        // a previous reconnect cycle is still active.
+        // Don't abort active executions here — let scheduleReconnect handle it.
+        // If reconnect succeeds, the execution continues (iopub messages flow
+        // through the new WS via the still-registered messageHandler). If
+        // reconnect fails, scheduleReconnect aborts the execution with an
+        // informative error. Intentional close()/restartKernel() remove all
+        // listeners before closing, so this handler only fires for unexpected
+        // disconnects.
         this.scheduleReconnect();
       });
     });
@@ -624,8 +646,7 @@ export class KernelConnection {
 
     this.messageHandlers.set(msgId, handler);
 
-    // Register abort callback so external events (WS close, kernel restart)
-    // can unblock this generator instead of hanging forever.
+    // Register callbacks so external events can unblock this generator.
     this.activeExecutionAbort = (err: Error) => push({ error: err });
 
     // Send the execute request

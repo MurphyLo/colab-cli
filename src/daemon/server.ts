@@ -736,7 +736,7 @@ function handleClient(
 
         const shellId = shellState.nextShellId++;
         const tmuxSession = `${TMUX_SESSION_PREFIX}${shellId}`;
-        const buffer = new TerminalBuffer();
+        const buffer = new TerminalBuffer(undefined, msg.cols || DEFAULT_SHELL_COLS, msg.rows || DEFAULT_SHELL_ROWS);
 
         const connection = new TerminalConnection(
           () => refresher.proxyUrl,
@@ -852,6 +852,7 @@ function handleClient(
         const shell = shellState.shells.get(msg.shellId);
         if (!shell || shell.status === 'closed') return;
         shell.connection.sendResize(msg.cols, msg.rows);
+        shell.buffer.resize(msg.cols, msg.rows);
         shell.cols = msg.cols;
         shell.rows = msg.rows;
         break;
@@ -890,6 +891,7 @@ function handleClient(
           // Send resize to remote terminal if dimensions provided
           if (msg.cols && msg.rows && shell.status === 'running') {
             shell.connection.sendResize(msg.cols, msg.rows);
+            shell.buffer.resize(msg.cols, msg.rows);
             shell.cols = msg.cols;
             shell.rows = msg.rows;
           }

@@ -1,4 +1,6 @@
-import { Terminal } from '@xterm/headless';
+import type { Terminal as TerminalType } from '@xterm/headless';
+import xterm from '@xterm/headless';
+const { Terminal } = xterm;
 
 const DEFAULT_MAX_BYTES = 100 * 1024; // 100 KB
 const MAX_SCROLLBACK_LINES = 1000;
@@ -6,7 +8,7 @@ const MAX_SCROLLBACK_LINES = 1000;
 export class TerminalBuffer {
   private chunks: string[] = [];
   private totalBytes = 0;
-  private terminal: Terminal;
+  private terminal: TerminalType;
 
   constructor(
     private readonly maxBytes: number = DEFAULT_MAX_BYTES,
@@ -39,7 +41,9 @@ export class TerminalBuffer {
       this.totalBytes = trimmed.length;
     }
 
-    this.terminal.write(data);
+    // writeSync bypasses xterm's setTimeout(0)-based write batching so
+    // the buffer is immediately readable by getSnapshot().
+    (this.terminal as any)._core._writeBuffer.writeSync(data);
   }
 
   getContents(tailBytes?: number): string {

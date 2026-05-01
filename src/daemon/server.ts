@@ -762,7 +762,10 @@ function handleClient(
                 shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: reason || 'connection closed' }));
               }
               console.log(`Shell ${shellId} closed: code=${code} reason=${reason || '(none)'}`);
-              setTimeout(() => shellState.shells.delete(shellId), 5 * 60 * 1000);
+              setTimeout(() => {
+                shellState.shells.get(shellId)?.buffer.dispose();
+                shellState.shells.delete(shellId);
+              }, 5 * 60 * 1000);
             },
             onError: (err) => {
               // Errors during reconnect are handled internally; this fires
@@ -775,7 +778,10 @@ function handleClient(
                 shell.attachedSocket.write(encode({ type: 'shell_closed', shellId, reason: err.message }));
               }
               console.error(`Shell ${shellId} error:`, err.message);
-              setTimeout(() => shellState.shells.delete(shellId), 5 * 60 * 1000);
+              setTimeout(() => {
+                shellState.shells.get(shellId)?.buffer.dispose();
+                shellState.shells.delete(shellId);
+              }, 5 * 60 * 1000);
             },
             onReconnecting: (attempt, maxAttempts) => {
               console.log(`Shell ${shellId} reconnecting (attempt ${attempt}/${maxAttempts})...`);
@@ -828,6 +834,7 @@ function handleClient(
           }
           send({ type: 'shell_opened', shellId });
         } catch (err) {
+          buffer.dispose();
           shellState.shells.delete(shellId);
           connection.close();
           send({

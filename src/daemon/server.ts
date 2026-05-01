@@ -501,8 +501,8 @@ async function main() {
   fs.writeFileSync(PID_FILE, String(process.pid));
   console.log('Daemon ready on', SOCKET_PATH);
 
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdown());
+  process.on('SIGINT', () => shutdown());
   keepAlive.start();
   refresher.start();
 

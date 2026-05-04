@@ -95,7 +95,7 @@ colab runtime restart --endpoint <endpoint>
 colab runtime destroy --endpoint <endpoint>
 ```
 
-Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `--kernel` to select a non-default kernel (`r` for R, `julia` for Julia). Use `resources` to check RAM, disk and GPU usage of a running runtime. Use `list` whenever endpoint selection matters.
+Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `--kernel` to select a non-default kernel (`r` for R, `julia` for Julia). Use `resources` to check RAM, disk and GPU usage of a running runtime. Use `list` whenever endpoint selection matters. When the task has explicit version pins (e.g. `requirements.txt` or `pyproject.toml`) and the native Python environment causes dependency conflicts, prefer installing `uv` on the runtime and running code under a `uv`-managed environment — this gives finer control than `--runtime-version` and does not require finding a matching image.
 
 ### Usage
 
@@ -260,8 +260,9 @@ colab drive-mount status                 # Check authorization status
 
 ### Choosing `fs` vs `drive`
 
-- Use `colab fs` when the target is the live runtime filesystem and the file size is within the direct/chunked transfer path.
-- Use `colab drive` when the user explicitly mentions Google Drive, needs persistence outside the runtime, or the file size exceeds the `fs` chunked limit.
+- Prefer `colab drive` for large file transfers in either direction (local ↔ Colab); use `colab fs` only for small, quick transfers.
+- If `colab fs` speed falls below ~1 MB/s for any file, switch to Drive as intermediary instead of waiting.
+- **Drive as intermediary**: Local → Colab: `colab drive upload` locally, then copy from the Drive mount to the target on the runtime (mount Drive first if needed). Colab → Local: copy the file to the Drive mount on the runtime, then `colab drive download <file-id>` locally.
 - Use `colab drive-mount` when the user wants to access Drive files from the runtime without browser auth prompts.
 - If the user wants a file visible inside Colab after mounting Drive, upload it with `colab drive` rather than forcing it into `/content`.
 

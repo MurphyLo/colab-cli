@@ -17,6 +17,7 @@ This tool supports:
 
 - Node.js 22+
 - A Google account with Colab access
+- Network access to: `google.com`, `googleapis.com`, `googleusercontent.com`, `colab.dev`
 
 ## Install
 

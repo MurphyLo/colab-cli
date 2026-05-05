@@ -6,6 +6,8 @@ import {
 } from '../colab/headers.js';
 import { log } from '../logging/index.js';
 
+const DEFAULT_TIMEOUT_MS = 120_000;
+
 export function encodeContentsPath(remotePath: string): string {
   return `/api/contents/${remotePath
     .split('/')
@@ -17,7 +19,7 @@ export async function contentsRequest(
   proxyUrl: string,
   token: string,
   apiPath: string,
-  options: { method?: string; body?: unknown } = {},
+  options: { method?: string; body?: unknown; timeoutMs?: number } = {},
 ): Promise<unknown> {
   const method = (options.method ?? 'GET').toUpperCase();
   const url = proxyUrl.replace(/\/$/, '') + apiPath;
@@ -32,23 +34,37 @@ export async function contentsRequest(
 
   log.debug(`contents ${method} ${apiPath}`);
 
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    const err = new Error(
-      `HTTP ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
-    );
-    (err as any).status = res.status;
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err = new Error(
+        `HTTP ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
+      );
+      (err as any).status = res.status;
+      throw err;
+    }
+
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${method} ${apiPath}`);
+    }
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
-
-  const text = await res.text();
-  return text ? JSON.parse(text) : null;
 }
 
 export async function getContentsMetadata(

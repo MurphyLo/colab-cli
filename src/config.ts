@@ -39,3 +39,4 @@ export const DRIVE_AUTH_FILE = path.join(CONFIG_DIR, 'drive-auth.json');
 export const DRIVE_MOUNT_AUTH_FILE = path.join(CONFIG_DIR, 'drive-mount-auth.json');
 export const SERVERS_FILE = path.join(CONFIG_DIR, 'servers.json');
 export const DRIVE_UPLOADS_DIR = path.join(CONFIG_DIR, 'drive-uploads');
+export const SHELL_COUNTER_FILE = path.join(CONFIG_DIR, 'next-shell-id');

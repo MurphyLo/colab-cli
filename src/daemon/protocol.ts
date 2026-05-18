@@ -14,7 +14,7 @@ export type ClientMessage =
   | { type: 'exec_list' }
   | { type: 'exec_send'; execId: number; stdin?: string; interrupt?: boolean }
   | { type: 'exec_clear'; execId?: number }
-  | { type: 'shell_open'; cols: number; rows: number }
+  | { type: 'shell_open'; cols: number; rows: number; shellId?: number }
   | { type: 'shell_input'; shellId: number; data: string }
   | { type: 'shell_resize'; shellId: number; cols: number; rows: number }
   | { type: 'shell_detach'; shellId: number }

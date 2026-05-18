@@ -1,6 +1,11 @@
+import fs from 'fs';
+import path from 'path';
 import { DaemonClient } from '../daemon/client.js';
+import { isDaemonRunning } from '../daemon/lifecycle.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
+import { listStoredServers } from '../runtime/storage.js';
 import { createSpinner } from '../output/json-output.js';
+import { CONFIG_DIR, SHELL_COUNTER_FILE } from '../config.js';
 
 /** Signal name → raw byte mapping. */
 const SIGNAL_MAP: Record<string, string> = {
@@ -24,6 +29,62 @@ function unescapeData(raw: string): string {
     .replace(/\\\\/g, '\\');
 }
 
+const SHELL_LOCK_PATH = path.join(CONFIG_DIR, 'shell-id.lock');
+
+async function allocateShellId(): Promise<number> {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  const maxWait = 5_000;
+  const start = Date.now();
+  while (Date.now() - start < maxWait) {
+    try {
+      fs.mkdirSync(SHELL_LOCK_PATH);
+      try {
+        let nextId = 1;
+        try {
+          nextId = parseInt(fs.readFileSync(SHELL_COUNTER_FILE, 'utf-8').trim(), 10) || 1;
+        } catch {}
+        fs.writeFileSync(SHELL_COUNTER_FILE, String(nextId + 1), { mode: 0o600 });
+        return nextId;
+      } finally {
+        try { fs.rmSync(SHELL_LOCK_PATH, { recursive: true }); } catch {}
+      }
+    } catch (err: any) {
+      if (err.code !== 'EEXIST') throw err;
+      try {
+        if (Date.now() - fs.statSync(SHELL_LOCK_PATH).mtimeMs > 10_000) {
+          try { fs.rmSync(SHELL_LOCK_PATH, { recursive: true }); } catch {}
+          continue;
+        }
+      } catch {}
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+  throw new Error('Failed to allocate shell ID: lock timeout');
+}
+
+async function findShellDaemon(shellId: number): Promise<DaemonClient> {
+  const servers = listStoredServers();
+  for (const server of servers) {
+    if (!(await isDaemonRunning(server.id))) continue;
+    try {
+      const client = new DaemonClient();
+      await client.connect(server.id);
+      try {
+        const shells = await client.shellList();
+        if (shells.some(s => s.shellId === shellId)) {
+          return client;
+        }
+      } catch {
+        // shellList failed, skip
+      }
+      client.close();
+    } catch {
+      // connect failed, nothing to close
+    }
+  }
+  throw new Error(`Shell ${shellId} not found`);
+}
+
 export async function shellCommand(
   runtimeManager: RuntimeManager,
   options: {
@@ -32,6 +93,7 @@ export async function shellCommand(
   },
 ): Promise<void> {
   const server = await runtimeManager.resolveTarget(options.endpoint);
+  const shellId = await allocateShellId();
 
   const spinner = createSpinner('Connecting to shell...').start();
   const client = new DaemonClient();
@@ -45,9 +107,8 @@ export async function shellCommand(
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
 
-  let shellId: number;
   try {
-    shellId = await client.shellOpen(cols, rows);
+    await client.shellOpen(cols, rows, shellId);
     spinner.stop();
   } catch (err) {
     spinner.fail('Failed to open shell');
@@ -75,20 +136,14 @@ export async function shellCommand(
 }
 
 export async function shellAttachCommand(
-  runtimeManager: RuntimeManager,
   shellId: number,
   options: {
-    endpoint?: string;
     noWait?: boolean;
     tail?: number;
   },
 ): Promise<void> {
-  const server = await runtimeManager.resolveTarget(options.endpoint);
+  const client = await findShellDaemon(shellId);
 
-  const client = new DaemonClient();
-  await client.connect(server.id);
-
-  // --tail implies --no-wait
   const noWait = options.noWait || options.tail !== undefined;
 
   if (noWait) {
@@ -121,30 +176,46 @@ export async function shellAttachCommand(
   }
 }
 
-export async function shellListCommand(
-  runtimeManager: RuntimeManager,
-  options: { endpoint?: string },
-): Promise<void> {
-  const server = await runtimeManager.resolveTarget(options.endpoint);
+export async function shellListCommand(): Promise<void> {
+  const servers = listStoredServers();
+  const allShells: Array<{
+    shellId: number;
+    endpoint: string;
+    status: string;
+    startedAt: string;
+    attached: boolean;
+  }> = [];
 
-  const client = new DaemonClient();
-  await client.connect(server.id);
-
-  try {
-    const shells = await client.shellList();
-    if (shells.length === 0) {
-      console.log('No shell sessions.');
-      return;
+  for (const server of servers) {
+    if (!(await isDaemonRunning(server.id))) continue;
+    try {
+      const client = new DaemonClient();
+      await client.connect(server.id);
+      try {
+        const shells = await client.shellList();
+        for (const s of shells) {
+          allShells.push({ ...s, endpoint: server.endpoint });
+        }
+      } finally {
+        client.close();
+      }
+    } catch {
+      // Daemon unreachable, skip
     }
+  }
 
-    const header = 'ID\tSTATUS\tSTARTED\t\t\t\tATTACHED';
-    console.log(header);
-    for (const s of shells) {
-      const started = new Date(s.startedAt).toLocaleString();
-      console.log(`${s.shellId}\t${s.status}\t${started}\t${s.attached ? 'yes' : 'no'}`);
-    }
-  } finally {
-    client.close();
+  if (allShells.length === 0) {
+    console.log('No shell sessions.');
+    return;
+  }
+
+  allShells.sort((a, b) => a.shellId - b.shellId);
+
+  const header = 'ID\tENDPOINT\tSTATUS\tSTARTED\t\t\t\tATTACHED';
+  console.log(header);
+  for (const s of allShells) {
+    const started = new Date(s.startedAt).toLocaleString();
+    console.log(`${s.shellId}\t${s.endpoint}\t${s.status}\t${started}\t${s.attached ? 'yes' : 'no'}`);
   }
 }
 
@@ -161,10 +232,8 @@ function readStdin(): Promise<string> {
 }
 
 export async function shellSendCommand(
-  runtimeManager: RuntimeManager,
   shellId: number,
   options: {
-    endpoint?: string;
     data?: string;
     signal?: string;
   },
@@ -186,17 +255,13 @@ export async function shellSendCommand(
   } else if (options.data !== undefined) {
     data = unescapeData(options.data);
   } else if (!process.stdin.isTTY) {
-    // No --data / --signal given and stdin is piped — read raw bytes from stdin
     data = await readStdin();
   } else {
     console.error('Provide --data <value>, --signal <name>, or pipe data via stdin');
     process.exit(1);
   }
 
-  const server = await runtimeManager.resolveTarget(options.endpoint);
-
-  const client = new DaemonClient();
-  await client.connect(server.id);
+  const client = await findShellDaemon(shellId);
 
   try {
     await client.shellSend(shellId, data);

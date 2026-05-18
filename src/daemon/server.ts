@@ -734,7 +734,14 @@ function handleClient(
           return;
         }
 
-        const shellId = shellState.nextShellId++;
+        const shellId = msg.shellId ?? shellState.nextShellId++;
+        if (shellState.shells.has(shellId)) {
+          send({ type: 'shell_error', message: `Shell ID ${shellId} already in use` });
+          return;
+        }
+        if (shellId >= shellState.nextShellId) {
+          shellState.nextShellId = shellId + 1;
+        }
         const tmuxSession = `${TMUX_SESSION_PREFIX}${shellId}`;
         const buffer = new TerminalBuffer(undefined, msg.cols || DEFAULT_SHELL_COLS, msg.rows || DEFAULT_SHELL_ROWS);
 

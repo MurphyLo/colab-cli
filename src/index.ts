@@ -277,8 +277,9 @@ execCmd
   .option('--tail <n>', 'only last N outputs (implies --no-wait)', parseInt)
   .action(async (id: string, opts) => {
     await ensureLoggedIn();
+    const endpoint = opts.endpoint ?? execCmd.opts().endpoint;
     await execAttachCommand(runtimeManager, colabClient, parseInt(id, 10), {
-      endpoint: opts.endpoint,
+      endpoint,
       noWait: !opts.wait,
       tail: opts.tail,
     });
@@ -290,8 +291,9 @@ execCmd
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .action(async (opts) => {
     await ensureLoggedIn();
+    const endpoint = opts.endpoint ?? execCmd.opts().endpoint;
     await execListCommand(runtimeManager, {
-      endpoint: opts.endpoint,
+      endpoint,
     });
   });
 
@@ -303,8 +305,9 @@ execCmd
   .option('--interrupt', 'interrupt the execution')
   .action(async (id: string, opts) => {
     await ensureLoggedIn();
+    const endpoint = opts.endpoint ?? execCmd.opts().endpoint;
     await execSendCommand(runtimeManager, parseInt(id, 10), {
-      endpoint: opts.endpoint,
+      endpoint,
       stdin: opts.stdin,
       interrupt: opts.interrupt,
     });
@@ -316,8 +319,9 @@ execCmd
   .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .action(async (id: string | undefined, opts) => {
     await ensureLoggedIn();
+    const endpoint = opts.endpoint ?? execCmd.opts().endpoint;
     await execClearCommand(runtimeManager, id ? parseInt(id, 10) : undefined, {
-      endpoint: opts.endpoint,
+      endpoint,
     });
   });
 
@@ -338,13 +342,11 @@ const shellCmd = program
 shellCmd
   .command('attach <id>')
   .description('attach to a shell session (replay buffer + stream live output)')
-  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .option('--no-wait', 'print buffered output and exit immediately')
   .option('--tail <n>', 'only last N lines of rendered output (implies --no-wait)', parseInt)
   .action(async (id: string, opts) => {
     await ensureLoggedIn();
-    await shellAttachCommand(runtimeManager, parseInt(id, 10), {
-      endpoint: opts.endpoint,
+    await shellAttachCommand(parseInt(id, 10), {
       noWait: !opts.wait,
       tail: opts.tail,
     });
@@ -353,18 +355,14 @@ shellCmd
 shellCmd
   .command('list')
   .description('list active shell sessions')
-  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
-  .action(async (opts) => {
+  .action(async () => {
     await ensureLoggedIn();
-    await shellListCommand(runtimeManager, {
-      endpoint: opts.endpoint,
-    });
+    await shellListCommand();
   });
 
 shellCmd
   .command('send <id>')
   .description('send raw data or signal to a shell session')
-  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
   .option('-d, --data <data>', "raw data to send (supports \\n, \\x03 escapes; prefer single quotes for simple values). Omit --data to read raw bytes from piped stdin/heredoc, useful for complex commands with nested quotes or $() that are hard to escape")
   .option(
     '--signal <signal>',
@@ -372,8 +370,7 @@ shellCmd
   )
   .action(async (id: string, opts) => {
     await ensureLoggedIn();
-    await shellSendCommand(runtimeManager, parseInt(id, 10), {
-      endpoint: opts.endpoint,
+    await shellSendCommand(parseInt(id, 10), {
       data: opts.data,
       signal: opts.signal,
     });

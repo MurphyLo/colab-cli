@@ -1,6 +1,6 @@
 ---
 name: colab-cli
-description: "Use this skill whenever the user wants to operate Google Colab from the terminal: authenticate, inspect available runtimes, create or destroy a runtime, restart a kernel, check CCU usage, execute Python remotely, open or manage interactive shell sessions, upload or download files to a Colab runtime, manage files in Google Drive through `colab drive`, or mount Drive on a runtime via `colab drive-mount`. Prefer this skill even if the user does not mention `colab-cli` explicitly but asks to use a Colab GPU or TPU, run code on Colab from a shell, open a terminal on the runtime, move files to `/content`, move large files through Drive, mount Drive automatically, or troubleshoot Colab auth, Drive auth, quota, proxy, shell, or runtime lifecycle issues."
+description: "Use this skill for Google Colab operations: auth, runtime lifecycle, remote Python execution, interactive shell sessions, file transfer, etc. Also triggers when the user needs a GPU/TPU, wants to run deep learning tasks remotely, or has any task that would benefit from a cloud GPU environment."
 metadata:
   short-description: Use the `colab` CLI for auth, runtime, exec, shell, fs, usage, Drive, and Drive mount tasks
 ---

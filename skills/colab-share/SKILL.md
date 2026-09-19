@@ -1,17 +1,11 @@
 ---
 name: colab-share
 description: >-
-  Publish a service running inside a private Google Colab runtime as a PUBLIC
-  demo URL that anyone can open in a browser — turning something only reachable
-  inside Colab into a shareable link. Use this whenever the user wants to share
-  a Colab-hosted demo / web UI / API / TensorBoard / Gradio / Streamlit / dev
-  server with others, get a public URL for something running on a Colab runtime,
-  make a Colab port publicly reachable, or "publish" / "share" / "expose" a
-  Colab service to the internet — especially when the public link must keep
-  working after the local machine sleeps or shuts down. Implemented under the
-  hood with a self-refreshing Cloudflare Worker; triggers even if the user says
-  "public colab url", "cloudflare worker for colab", or just "let people outside
-  access my colab server" without naming this skill.
+  Publish a port on a running Google Colab runtime as a public URL, fronted by a
+  self-refreshing Cloudflare Worker that holds the credential at the edge, so the
+  link survives the local machine sleeping — unlike colab-cli's local
+  port-forward. Also lists and removes those forwards.
+disable-model-invocation: true
 ---
 
 # Colab Share

@@ -109,16 +109,20 @@ export async function listRuntimesCommand(
   const spinner = createSpinner('Fetching runtimes...').start();
   try {
     const assignments = await runtimeManager.list();
+    const createdAts = await Promise.all(
+      assignments.map((a) => runtimeManager.getCreatedAt(a)),
+    );
     spinner.stop();
 
     if (isJsonMode()) {
       jsonResult({
         command: 'runtime.list',
-        runtimes: assignments.map((a) => ({
+        runtimes: assignments.map((a, i) => ({
           type: variantToMachineType(a.variant),
           accelerator: a.accelerator && a.accelerator !== 'NONE' ? a.accelerator : undefined,
           shape: shapeToMachineShape(isHighMemOnlyAccelerator(a.accelerator) ? Shape.HIGHMEM : a.machineShape),
           endpoint: a.endpoint,
+          createdAt: createdAts[i]?.toISOString(),
         })),
       });
       return;
@@ -130,7 +134,7 @@ export async function listRuntimesCommand(
     }
 
     console.log(chalk.bold('\nActive Runtimes:'));
-    for (const a of assignments) {
+    for (const [i, a] of assignments.entries()) {
       const type = variantToMachineType(a.variant);
       const displayShape =
         isHighMemOnlyAccelerator(a.accelerator) ? Shape.HIGHMEM : a.machineShape;
@@ -139,8 +143,12 @@ export async function listRuntimesCommand(
         a.accelerator && a.accelerator !== 'NONE'
           ? ` ${a.accelerator}`
           : '';
+      const createdAt = createdAts[i];
+      const created = createdAt
+        ? ` - ${chalk.dim(`created ${formatLocalTime(createdAt)}`)}`
+        : '';
       console.log(
-        `  ${chalk.green('●')} ${type}${accel} (${shape}) - ${chalk.dim(a.endpoint)}`,
+        `  ${chalk.green('●')} ${type}${accel} (${shape}) - ${chalk.dim(a.endpoint)}${created}`,
       );
     }
     console.log('');
@@ -148,6 +156,11 @@ export async function listRuntimesCommand(
     spinner.fail('Failed to list runtimes');
     throw err;
   }
+}
+
+function formatLocalTime(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 export async function listAvailableRuntimesCommand(

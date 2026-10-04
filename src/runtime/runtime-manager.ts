@@ -126,6 +126,27 @@ export class RuntimeManager {
     return this.colabClient.listAssignments();
   }
 
+  /**
+   * Best-effort creation time of a runtime: the Jupyter server start time,
+   * falling back to the local record for runtimes created by this CLI.
+   */
+  async getCreatedAt(assignment: ListedAssignment): Promise<Date | undefined> {
+    const proxy = assignment.runtimeProxyInfo;
+    if (proxy) {
+      try {
+        const status = await this.colabClient.getJupyterStatus(
+          proxy.url,
+          proxy.token,
+          AbortSignal.timeout(5000),
+        );
+        return status.started;
+      } catch (err) {
+        log.debug('Failed to fetch Jupyter status for', assignment.endpoint, err);
+      }
+    }
+    return this.getServerByEndpoint(assignment.endpoint)?.dateAssigned;
+  }
+
   getLatestServer(): StoredServer | undefined {
     const servers = listStoredServers();
     if (servers.length === 0) return undefined;

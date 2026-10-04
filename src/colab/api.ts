@@ -336,6 +336,13 @@ export const ResourcesSchema = z.object({
 });
 export type Resources = z.infer<typeof ResourcesSchema>;
 
+/** The schema for the Jupyter server status (`/api/status`) on a Colab runtime. */
+export const JupyterStatusSchema = z.object({
+  started: z.coerce.date(),
+  last_activity: z.coerce.date().optional(),
+});
+export type JupyterStatus = z.infer<typeof JupyterStatusSchema>;
+
 export function variantToMachineType(variant: Variant): string {
   switch (variant) {
     case Variant.DEFAULT: return 'CPU';

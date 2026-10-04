@@ -26,6 +26,8 @@ import {
   isHighMemOnlyAccelerator,
   Resources,
   ResourcesSchema,
+  JupyterStatus,
+  JupyterStatusSchema,
 } from './api.js';
 import {
   ACCEPT_JSON_HEADER,
@@ -220,6 +222,33 @@ export class ColabClient {
       url,
       { method: 'GET', headers, signal },
       ResourcesSchema,
+    );
+  }
+
+  /**
+   * Gets the Jupyter server status for a given runtime. Its `started` field
+   * approximates when the runtime was created, which the assignments API
+   * does not expose.
+   *
+   * @param proxyUrl - The runtime proxy base URL.
+   * @param token - The runtime proxy token.
+   * @param signal - Optional {@link AbortSignal} to cancel the request.
+   * @returns The Jupyter server status.
+   */
+  async getJupyterStatus(
+    proxyUrl: string,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<JupyterStatus> {
+    const url = new URL('api/status', proxyUrl);
+    const headers = {
+      [COLAB_RUNTIME_PROXY_TOKEN_HEADER.key]: token,
+    };
+
+    return await this.issueRequest(
+      url,
+      { method: 'GET', headers, signal },
+      JupyterStatusSchema,
     );
   }
 

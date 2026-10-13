@@ -55,7 +55,7 @@ export function renderOutput(output: KernelOutput): void {
       break;
 
     case 'status':
-      // Status changes are silent in terminal output
+      if (output.message) console.error(`[${output.message}]`);
       break;
   }
 }

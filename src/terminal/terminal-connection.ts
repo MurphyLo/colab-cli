@@ -10,6 +10,7 @@
  */
 
 import WebSocket from 'ws';
+import { monitorWebSocket, discardWebSocket, reconnectDelay } from '../utils/websocket-health.js';
 import {
   COLAB_CLIENT_AGENT_HEADER,
   COLAB_RUNTIME_PROXY_TOKEN_HEADER,
@@ -36,13 +37,12 @@ export interface TerminalConnectionHandlers {
   /** Called when a reconnect attempt starts. */
   onReconnecting?: (attempt: number, maxAttempts: number) => void;
   /** Called when a reconnect succeeds. */
-  onReconnected?: () => void;
+  onReconnected?: (sendInput: (data: string) => Promise<void>) => void | Promise<void>;
 }
 
-const RECONNECT_MAX_ATTEMPTS = 5;
+const RECONNECT_MAX_ATTEMPTS = Infinity;
 const RECONNECT_BASE_DELAY_MS = 2_000;
-const PING_INTERVAL_MS = 30_000;
-const swallowSocketError = () => {};
+
 
 /**
  * Manages a WebSocket connection to `/colab/tty` for interactive terminal I/O.
@@ -52,16 +52,17 @@ const swallowSocketError = () => {};
  * - Receive: `{"data": string}` for output
  *
  * Automatically reconnects on unexpected disconnects (exponential backoff,
- * up to 5 attempts). Sends WebSocket-level pings every 30 s to keep the
+ * with a 30 s delay cap). Sends WebSocket-level pings every 15 s to keep the
  * connection alive across Colab's idle-timeout window.
  */
 export class TerminalConnection {
   private ws?: WebSocket;
   private _closed = false;
   private _reconnecting = false;
+  private reconnectGeneration = 0;
+  private rejectHandshake?: (error: Error) => void;
   private _reconnectTimer?: ReturnType<typeof setTimeout>;
-  private _pingInterval?: ReturnType<typeof setInterval>;
-  private pendingMessages: TerminalMessage[] = [];
+  private stopHeartbeat?: () => void;
 
   constructor(
     private readonly getProxyUrl: () => string,
@@ -80,15 +81,15 @@ export class TerminalConnection {
   }
 
   /** Send input data to the remote terminal. */
-  send(data: string): void {
-    if (this._closed) return;
-    this.sendMessage({ data });
+  async send(data: string): Promise<void> {
+    if (this._reconnecting) throw new Error('Terminal reconnecting; input was not sent. Retry after reconnection.');
+    await this.sendMessage({ data });
   }
 
   /** Send a resize message to update remote terminal dimensions. */
   sendResize(cols: number, rows: number): void {
-    if (this._closed) return;
-    this.sendMessage({ cols, rows });
+    if (!this.isConnected) return;
+    void this.sendMessage({ cols, rows }).catch((err) => log.debug('Resize failed:', err));
     log.trace(`Sent terminal resize: ${cols}x${rows}`);
   }
 
@@ -98,7 +99,6 @@ export class TerminalConnection {
     this._closed = true;
     this.cancelReconnect();
     this.stopPing();
-    this.pendingMessages = [];
     if (this.ws) {
       this.discardSocket(this.ws);
       this.ws = undefined;
@@ -121,29 +121,23 @@ export class TerminalConnection {
 
     return new Promise<void>((resolve, reject) => {
       const agent = getProxyAgent(wsUrl);
-      this.ws = new WebSocket(wsUrl, {
+      const ws = new WebSocket(wsUrl, {
         headers: {
           [COLAB_RUNTIME_PROXY_TOKEN_HEADER.key]: this.getToken(),
           [COLAB_CLIENT_AGENT_HEADER.key]: COLAB_CLIENT_AGENT_HEADER.value,
         },
         ...(agent ? { agent } : {}),
+        handshakeTimeout: 30_000,
       });
 
+      this.ws = ws;
       let opened = false;
+      this.rejectHandshake = reject;
 
-      const timeout = setTimeout(() => {
-        if (this.ws) {
-          this.discardSocket(this.ws);
-          this.ws = undefined;
-        }
-        reject(new Error('Terminal WebSocket connection timed out'));
-      }, 30_000);
-
-      this.ws.on('open', () => {
-        clearTimeout(timeout);
+      ws.on('open', () => {
         opened = true;
+        this.rejectHandshake = undefined;
         log.debug('Terminal WebSocket connected');
-        this.flushPendingMessages();
         this.startPing();
         if (!this._closed) {
           this.handlers.onOpen();
@@ -156,17 +150,17 @@ export class TerminalConnection {
       // the caller to mark the shell closed before the reconnect kicks in. So
       // only surface onError for pre-open failures; let 'close' drive recovery
       // for anything after the handshake.
-      this.ws.on('error', (err) => {
-        clearTimeout(timeout);
+      ws.on('error', (err) => {
         log.error('Terminal WebSocket error:', err);
         if (!opened && !this._closed) {
           this.handlers.onError(err);
         }
-        reject(err);
+        if (!opened) { this.rejectHandshake = undefined; reject(err); }
+        ws.terminate();
       });
 
-      this.ws.on('message', (raw: WebSocket.RawData) => {
-        if (this._closed) return;
+      ws.on('message', (raw: WebSocket.RawData) => {
+        if (this._closed || this.ws !== ws) return;
         try {
           const text = typeof raw === 'string' ? raw : (raw as Buffer).toString();
           this.handleMessage(text);
@@ -175,8 +169,9 @@ export class TerminalConnection {
         }
       });
 
-      this.ws.on('close', (code: number, reason: Buffer) => {
-        clearTimeout(timeout);
+      ws.on('close', (code: number, reason: Buffer) => {
+        if (!opened) reject(new Error('Terminal WebSocket closed before opening'));
+        if (this.ws !== ws) return;
         this.stopPing();
         const reasonStr = reason.toString();
         log.debug(`Terminal WebSocket closed: ${code} ${reasonStr}`);
@@ -185,7 +180,7 @@ export class TerminalConnection {
 
         this.ws = undefined;
         // Attempt auto-reconnect on unexpected disconnect
-        this.scheduleReconnect(code, reasonStr);
+        if (opened) this.scheduleReconnect(code, reasonStr);
       });
     });
   }
@@ -194,16 +189,17 @@ export class TerminalConnection {
 
   /**
    * Rebuild the WebSocket after an unexpected close. Exponential backoff,
-   * capped at RECONNECT_MAX_ATTEMPTS. The remote tmux session stays alive,
+   * with a capped delay and no attempt limit. The remote tmux session stays alive,
    * so reconnecting + tmux switch-client restores the shell seamlessly.
    */
   private scheduleReconnect(closeCode: number, closeReason: string): void {
     if (this._closed || this._reconnecting) return;
     this._reconnecting = true;
+    const generation = this.reconnectGeneration;
     let attempt = 0;
 
     const tryOnce = async () => {
-      if (this._closed) {
+      if (this._closed || generation !== this.reconnectGeneration) {
         this._reconnecting = false;
         return;
       }
@@ -219,24 +215,20 @@ export class TerminalConnection {
         }
         await this.connectWebSocket();
 
-        if (this._closed) {
+        if (this._closed || generation !== this.reconnectGeneration) {
           this._reconnecting = false;
           return;
         }
 
+        if (!this.isConnected) throw new Error('Terminal closed during recovery');
         log.debug(`Terminal WS reconnected (attempt ${attempt})`);
+        await this.handlers.onReconnected?.((data) => this.sendMessage({ data }));
+        if (!this.isConnected) throw new Error('Terminal closed while restoring session');
         this._reconnecting = false;
-        this.handlers.onReconnected?.();
       } catch (err) {
         log.debug(`Terminal WS reconnect attempt ${attempt} failed: ${err instanceof Error ? err.message : err}`);
-        if (attempt >= RECONNECT_MAX_ATTEMPTS || this._closed) {
-          log.error(`Terminal WS reconnect gave up after ${attempt} attempts`);
-          this._reconnecting = false;
-          // All retries exhausted — report final close to the caller
-          this.handlers.onClose(closeCode, closeReason || 'connection lost (reconnect failed)');
-          return;
-        }
-        this._reconnectTimer = setTimeout(tryOnce, RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1));
+        if (this._closed) return;
+        this._reconnectTimer = setTimeout(tryOnce, reconnectDelay(attempt));
       }
     };
 
@@ -244,6 +236,9 @@ export class TerminalConnection {
   }
 
   private cancelReconnect(): void {
+    this.reconnectGeneration++;
+    this.rejectHandshake?.(new Error('Connection attempt cancelled'));
+    this.rejectHandshake = undefined;
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = undefined;
@@ -252,39 +247,17 @@ export class TerminalConnection {
   }
 
   private discardSocket(ws: WebSocket): void {
-    ws.removeAllListeners();
-    ws.on('error', swallowSocketError);
-    if (ws.readyState === WebSocket.CONNECTING) {
-      // Abort a half-open handshake without surfacing an unhandled error.
-      ws.terminate();
-      return;
-    }
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING) {
-      ws.close();
-    }
+    discardWebSocket(ws);
   }
-
-  // ── Keepalive ping ──
 
   private startPing(): void {
     this.stopPing();
-    this._pingInterval = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        try {
-          this.ws.ping();
-        } catch {
-          // Swallow — onClose will fire if the socket is dead
-        }
-      }
-    }, PING_INTERVAL_MS);
-    this._pingInterval.unref();
+    if (this.ws) this.stopHeartbeat = monitorWebSocket(this.ws);
   }
 
   private stopPing(): void {
-    if (this._pingInterval) {
-      clearInterval(this._pingInterval);
-      this._pingInterval = undefined;
-    }
+    this.stopHeartbeat?.();
+    this.stopHeartbeat = undefined;
   }
 
   // ── Helpers ──
@@ -316,32 +289,15 @@ export class TerminalConnection {
     }
   }
 
-  private sendMessage(message: TerminalMessage): void {
-    if (!this.ws) {
-      log.error('Cannot send terminal message: WebSocket not created');
-      return;
+  private async sendMessage(message: TerminalMessage): Promise<void> {
+    if (this._closed || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('Terminal disconnected; input was not sent. Retry after reconnection.');
     }
-    if (this.ws.readyState === WebSocket.CONNECTING) {
-      this.pendingMessages.push(message);
-      return;
-    }
-    if (this.ws.readyState !== WebSocket.OPEN) {
-      log.error('Cannot send terminal message: WebSocket not open');
-      return;
-    }
-    try {
-      this.ws.send(JSON.stringify(message));
-    } catch (err) {
-      log.error('Failed to send terminal message:', err);
-    }
-  }
-
-  private flushPendingMessages(): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const pending = this.pendingMessages;
-    this.pendingMessages = [];
-    for (const msg of pending) {
-      this.sendMessage(msg);
-    }
+    // ACK means accepted by the local transport, not executed remotely. Never
+    // replay terminal input automatically: it may have side effects.
+    const ws = this.ws;
+    await new Promise<void>((resolve, reject) => {
+      ws.send(JSON.stringify(message), (err) => err ? reject(err) : resolve());
+    });
   }
 }

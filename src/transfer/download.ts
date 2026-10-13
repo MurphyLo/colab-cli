@@ -1,4 +1,3 @@
-import fs from 'fs';
 import path from 'path';
 import {
   getContentsMetadata,
@@ -16,7 +15,8 @@ import {
   normalizeRemotePath,
   buildChunkPlan,
   createTransferId,
-  sleep,
+  transferRetry,
+  writeDownloadAtomic,
   runPool,
   ensureRemoteDirectory,
 } from './common.js';
@@ -60,19 +60,10 @@ async function downloadBase64WithRetry(
   remotePath: string,
   retries: number,
 ): Promise<string> {
-  let lastError: unknown = null;
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const { content } = await getFileBase64Content(conn.getProxyUrl(), conn.getToken(), remotePath);
-      return content;
-    } catch (err) {
-      lastError = err;
-      if (attempt < retries) await sleep(1000 * attempt);
-    }
-  }
-  throw new Error(
-    `Download failed after ${retries} attempts for ${remotePath}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
-  );
+  return transferRetry(async () => {
+    const { content } = await getFileBase64Content(conn.getProxyUrl(), conn.getToken(), remotePath);
+    return content;
+  }, retries);
 }
 
 function buildSplitCode(sourcePath: string, partsDir: string, chunkSizeBytes: number, fileSize: number): string {
@@ -117,8 +108,7 @@ async function downloadDirect(
   const buffer = Buffer.from(content, 'base64');
 
   onProgress?.({ type: 'writing', localPath, sizeBytes: buffer.length });
-  fs.mkdirSync(path.dirname(localPath), { recursive: true });
-  fs.writeFileSync(localPath, buffer);
+  writeDownloadAtomic(localPath, [buffer], fileSize);
 
   onProgress?.({ type: 'done', localPath, sizeBytes: buffer.length });
   return { remotePath, localPath, sizeBytes: buffer.length, strategy: 'direct' };
@@ -161,21 +151,7 @@ async function downloadChunked(
 
   // Write locally
   onProgress?.({ type: 'writing', localPath, sizeBytes: fileSize });
-  fs.mkdirSync(path.dirname(localPath), { recursive: true });
-  const fd = fs.openSync(localPath, 'w');
-  try {
-    for (const buf of chunkBuffers) {
-      fs.writeSync(fd, buf);
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-
-  // Verify local size
-  const actualSize = fs.statSync(localPath).size;
-  if (actualSize !== fileSize) {
-    throw new Error(`Local size mismatch: expected ${fileSize}, got ${actualSize}`);
-  }
+  writeDownloadAtomic(localPath, chunkBuffers, fileSize);
 
   // Cleanup remote temp
   try {
@@ -200,7 +176,7 @@ export async function downloadFile(
   const localPath = resolveLocalPath(remotePath, options.localPath);
 
   // Get file metadata
-  const metadata = await getContentsMetadata(conn.getProxyUrl(), conn.getToken(), remotePath);
+  const metadata = await transferRetry(() => getContentsMetadata(conn.getProxyUrl(), conn.getToken(), remotePath), options.retries);
   if (!metadata || metadata.type !== 'file') {
     throw new Error(`Remote path is not a file: ${remotePath}`);
   }

@@ -94,6 +94,7 @@ interface ActiveExecution {
   execId: number;
   attachedSocket?: net.Socket;
   pendingAuthRequests: Map<string, (error?: string) => void>;
+  stdinSendInFlight?: boolean;
   pendingStdinResolve?: (value: string | undefined) => void;
   /** Resolves when background auth polling is interrupted. */
   pendingAuthInterruptResolve?: () => void;
@@ -411,7 +412,7 @@ async function main() {
       if (!kernel.isConnected) {
         const message = kernel.isReconnecting
           ? 'Kernel WebSocket is reconnecting, retry in a few seconds.'
-          : 'Kernel WebSocket disconnected and auto-reconnect failed. Run `colab runtime restart` to restore exec (resets kernel state; shell and port-forward unaffected).';
+          : 'Kernel WebSocket is disconnected. No code was submitted; retry after the connection is restored.';
         store.fail(execId, message);
         const active = execState.activeExecution;
         if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
@@ -431,7 +432,7 @@ async function main() {
             );
           }
           // Wait for stdin via exec_send, attached client, or interrupt
-          const value = await new Promise<string | undefined>((resolve) => {
+          await new Promise<string | undefined>((resolve) => {
             if (active?.execId === execId) {
               active.pendingStdinResolve = resolve;
             } else {
@@ -442,9 +443,7 @@ async function main() {
             active.pendingStdinResolve = undefined;
           }
           store.clearPendingInput(execId);
-          if (value !== undefined) {
-            kernel.sendStdinReply(value);
-          }
+          // Input is sent by the IPC handler before acknowledging it.
           // undefined means interrupted — skip reply, continue consuming outputs
           continue;
         }
@@ -459,10 +458,7 @@ async function main() {
         active.attachedSocket.write(encode({ type: 'exec_done' }));
       }
     } catch (err) {
-      let message = err instanceof Error ? err.message : String(err);
-      if (!kernel.isConnected && !kernel.isReconnecting) {
-        message += '. Run `colab runtime restart` to restore exec (resets kernel state; shell and port-forward unaffected).';
-      }
+      const message = err instanceof Error ? err.message : String(err);
       store.fail(execId, message);
       const active = execState.activeExecution;
       if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
@@ -534,6 +530,19 @@ function handleClient(
 ) {
   const send = (msg: ServerMessage) => {
     if (!socket.destroyed) socket.write(encode(msg));
+  };
+
+  const deliverStdin = async (active: ActiveExecution, value: string) => {
+    const resolve = active.pendingStdinResolve;
+    if (!resolve || active.stdinSendInFlight) throw new Error('Execution is not waiting for another input');
+    active.stdinSendInFlight = true;
+    try {
+      await kernel.sendStdinReply(value);
+      if (active.pendingStdinResolve === resolve) {
+        active.pendingStdinResolve = undefined;
+        resolve(value);
+      }
+    } finally { active.stdinSendInFlight = false; }
   };
 
   send({ type: 'ready' });
@@ -614,7 +623,7 @@ function handleClient(
             send({ type: 'exec_done' });
             return;
           }
-          if (exec.status === 'error') {
+          if (exec.status === 'error' || exec.status === 'crashed') {
             send({ type: 'exec_error', message: exec.errorMessage ?? 'Unknown error' });
             return;
           }
@@ -684,8 +693,10 @@ function handleClient(
             });
             return;
           }
-          active.pendingStdinResolve(msg.stdin);
-          active.pendingStdinResolve = undefined;
+          try { await deliverStdin(active, msg.stdin); } catch (err) {
+            send({ type: 'exec_error', message: String(err) });
+            return;
+          }
           send({ type: 'exec_send_ack', execId: msg.execId });
         }
         break;
@@ -708,8 +719,10 @@ function handleClient(
       case 'stdin_reply': {
         const active = execState.activeExecution;
         if (active?.pendingStdinResolve) {
-          active.pendingStdinResolve(msg.value);
-          active.pendingStdinResolve = undefined;
+          try { await deliverStdin(active, msg.value); } catch (err) {
+            send({ type: 'exec_error', message: String(err) });
+            return;
+          }
         }
         break;
       }
@@ -810,16 +823,16 @@ function handleClient(
                 shellState.shells.delete(shellId);
               }, 5 * 60 * 1000);
             },
-            onReconnecting: (attempt, maxAttempts) => {
-              console.log(`Shell ${shellId} reconnecting (attempt ${attempt}/${maxAttempts})...`);
+            onReconnecting: (attempt) => {
+              console.log(`Shell ${shellId} reconnecting (attempt ${attempt})...`);
             },
-            onReconnected: () => {
+            onReconnected: async (sendInput) => {
               const shell = shellState.shells.get(shellId);
               if (!shell) return;
               console.log(`Shell ${shellId} reconnected, re-attaching tmux session ${tmuxSession}`);
               // Re-switch to the shell's own tmux session. The tmux session
               // survived the WS disconnect, so all state is preserved.
-              shell.connection.send(`tmux switch-client -t ${tmuxSession}\n`);
+              await sendInput(`tmux switch-client -t ${tmuxSession}\n`);
             },
           },
         );
@@ -843,7 +856,7 @@ function handleClient(
           // on the same runtime don't kick each other off the shared `/colab/tty`
           // session. `kill-session` guards against a stale session left behind
           // by a previous daemon instance (nextShellId resets on daemon restart).
-          connection.send(
+          await connection.send(
             `tmux kill-session -t ${tmuxSession} 2>/dev/null; ` +
             `tmux new-session -d -s ${tmuxSession}; ` +
             `tmux set-option -t ${tmuxSession} status off; ` +
@@ -878,7 +891,10 @@ function handleClient(
           send({ type: 'shell_error', message: `Shell ${msg.shellId} not found or closed` });
           return;
         }
-        shell.connection.send(msg.data);
+        try { await shell.connection.send(msg.data); } catch (err) {
+          send({ type: 'shell_error', message: String(err) });
+          return;
+        }
         break;
       }
 
@@ -940,7 +956,7 @@ function handleClient(
       case 'shell_list': {
         const shells = Array.from(shellState.shells.values()).map((s) => ({
           shellId: s.shellId,
-          status: s.status,
+          status: s.status === 'running' && s.connection.isReconnecting ? 'reconnecting' as const : s.status,
           startedAt: s.startedAt.toISOString(),
           attached: s.attachedSocket !== undefined && !s.attachedSocket.destroyed,
         }));
@@ -954,7 +970,10 @@ function handleClient(
           send({ type: 'shell_error', message: `Shell ${msg.shellId} not found or closed` });
           return;
         }
-        shell.connection.send(msg.data);
+        try { await shell.connection.send(msg.data); } catch (err) {
+          send({ type: 'shell_error', message: String(err) });
+          return;
+        }
         send({ type: 'shell_send_ack', shellId: msg.shellId });
         break;
       }
@@ -1055,10 +1074,7 @@ function handleClient(
         resolve('CLI session closed before authorization completed');
       }
       active.pendingAuthRequests.clear();
-      if (active.pendingStdinResolve) {
-        active.pendingStdinResolve(undefined);
-        active.pendingStdinResolve = undefined;
-      }
+      // Keep pending stdin so a later attach or exec send can answer it.
       // Detach the socket but keep the execution running in the daemon.
       active.attachedSocket = undefined;
     }

@@ -20,3 +20,5 @@ docs/error-records/*
 .firecrawl/
 scripts/
 !skills/**/scripts/
+
+.test-build/

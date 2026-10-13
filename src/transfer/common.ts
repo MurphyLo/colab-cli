@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   getContentsMetadata,
   putDirectory,
@@ -10,7 +12,7 @@ export const DIRECT_LIMIT_BYTES = 20 * 1024 * 1024;
 export const CHUNKED_MAX_BYTES = 500 * 1024 * 1024;
 export const DEFAULT_CHUNK_SIZE_BYTES = 20 * 1024 * 1024;
 export const DEFAULT_MAX_CONCURRENCY = 25;
-export const DEFAULT_RETRIES = 3;
+export const DEFAULT_RETRIES = 6;
 export const TMP_ROOT = 'content/.colab-transfer-tmp';
 
 // --- Interfaces ---
@@ -99,17 +101,15 @@ export async function ensureRemoteDirectory(
 ): Promise<void> {
   if (!dirPath || dirPath === 'content') return;
   try {
-    const metadata = await getContentsMetadata(
-      conn.getProxyUrl(),
-      conn.getToken(),
-      dirPath,
-    );
+    const metadata = await transferRetry(() => getContentsMetadata(
+      conn.getProxyUrl(), conn.getToken(), dirPath,
+    ));
     if (metadata && metadata.type === 'directory') return;
     throw new Error(`Remote path exists but is not a directory: ${dirPath}`);
   } catch (err: any) {
     if (err?.status !== 404) throw err;
   }
-  await putDirectory(conn.getProxyUrl(), conn.getToken(), dirPath);
+  await transferRetry(() => putDirectory(conn.getProxyUrl(), conn.getToken(), dirPath));
 }
 
 export async function ensureRemoteParents(
@@ -130,4 +130,43 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+}
+
+/** Retry only transport errors and transient HTTP failures; never retry code execution. */
+export async function transferRetry<T>(operation: () => Promise<T>, attempts = DEFAULT_RETRIES): Promise<T> {
+  if (!Number.isInteger(attempts) || attempts < 1) throw new Error('retries must be a positive integer');
+  for (let attempt = 1; ; attempt++) {
+    try { return await operation(); } catch (err) {
+      const status = (err as { status?: number })?.status;
+      if (attempt >= attempts || (status !== undefined && ![408, 429, 500, 502, 503, 504].includes(status))) throw err;
+      await sleep(Math.min(30_000, 1000 * 2 ** (attempt - 1)));
+    }
+  }
+}
+
+/** Validate before publishing, preserving the previous destination on failure. */
+export function writeDownloadAtomic(localPath: string, buffers: Buffer[], expectedSize: number): void {
+  const actualSize = buffers.reduce((sum, buffer) => sum + buffer.length, 0);
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || actualSize !== expectedSize) {
+    throw new Error(`Download size mismatch: expected ${expectedSize}, got ${actualSize}`);
+  }
+  fs.mkdirSync(path.dirname(localPath), { recursive: true });
+  const temporary = localPath + '.' + crypto.randomUUID() + '.part';
+  try {
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try {
+      for (const buffer of buffers) {
+        let offset = 0;
+        while (offset < buffer.length) {
+          const written = fs.writeSync(fd, buffer, offset, buffer.length - offset);
+          if (written === 0) throw new Error('Download write made no progress');
+          offset += written;
+        }
+      }
+      fs.fsyncSync(fd);
+    } finally { fs.closeSync(fd); }
+    fs.renameSync(temporary, localPath);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
 }

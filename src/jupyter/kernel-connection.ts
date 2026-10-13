@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { monitorWebSocket, discardWebSocket, reconnectDelay } from '../utils/websocket-health.js';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
 import { AuthType, AUTH_TYPE_VALUES } from '../colab/api.js';
@@ -46,6 +47,7 @@ export interface ErrorOutput {
 export interface StatusOutput {
   type: 'status';
   executionState: string;
+  message?: string;
 }
 
 export interface InputRequestOutput {
@@ -88,7 +90,12 @@ export class KernelConnection {
   private _restarting = false;
   private _closed = false;
   private _reconnecting = false;
+  private reconnectGeneration = 0;
+  private rejectHandshake?: (error: Error) => void;
   private _reconnectTimer?: ReturnType<typeof setTimeout>;
+  private pendingAuthReplies = new Map<number, string | undefined>();
+  private stopHeartbeat?: () => void;
+  private activeConnectionStatus?: (state: string) => void;
   private messageHandlers = new Map<string, (msg: JupyterMessage) => void>();
   /** Abort callback for the currently running executeAndStream generator. */
   private activeExecutionAbort?: (err: Error) => void;
@@ -129,6 +136,7 @@ export class KernelConnection {
       },
     });
 
+    if (this._closed) throw new Error('Kernel connection closed');
     this.kernelId = session.kernel?.id;
     this.sessionId = session.id;
     if (!this.kernelId) {
@@ -188,14 +196,16 @@ export class KernelConnection {
     }
 
     this.cancelReconnect();
+    this.stopHeartbeat?.();
+    this.pendingAuthReplies.clear();
+    this.activeExecutionAbort?.(new Error('Kernel explicitly restarted during execution'));
     this._restarting = true;
     try {
       log.debug('Restarting kernel...');
 
       // Close existing websocket
       if (this.ws) {
-        this.ws.removeAllListeners();
-        this.ws.close();
+        discardWebSocket(this.ws);
         this.ws = undefined;
       }
 
@@ -211,8 +221,10 @@ export class KernelConnection {
     }
   }
 
-  sendStdinReply(value: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+  async sendStdinReply(value: string): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('Kernel disconnected; input was not sent. Retry after reconnection.');
+    }
 
     const reply: JupyterMessage = {
       header: {
@@ -229,17 +241,21 @@ export class KernelConnection {
       parent_header: {},
     };
 
-    this.ws.send(JSON.stringify(reply));
+    const ws = this.ws;
+    await new Promise<void>((resolve, reject) => {
+      ws.send(JSON.stringify(reply), (err) => err ? reject(err) : resolve());
+    });
     log.trace('Stdin reply sent');
   }
 
   close(): void {
     this._closed = true;
     this.cancelReconnect();
+    this.stopHeartbeat?.();
+    this.activeExecutionAbort?.(new Error('Kernel connection closed; remote execution may still be running'));
     this.messageHandlers.clear();
     if (this.ws) {
-      this.ws.removeAllListeners();
-      this.ws.close();
+      discardWebSocket(this.ws);
       this.ws = undefined;
     }
   }
@@ -257,6 +273,9 @@ export class KernelConnection {
   }
 
   private cancelReconnect(): void {
+    this.reconnectGeneration++;
+    this.rejectHandshake?.(new Error('Connection attempt cancelled'));
+    this.rejectHandshake = undefined;
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = undefined;
@@ -264,75 +283,32 @@ export class KernelConnection {
     this._reconnecting = false;
   }
 
-  /**
-   * Rebuild the WebSocket after an unexpected close. Exponential backoff,
-   * capped at 5 attempts. Only the WS is rebuilt — the kernel process on
-   * Colab stays alive, so Python state is preserved. Suppressed during
-   * intentional close() / restartKernel().
-   */
+  /** Reconnect the same kernel and client session until explicitly closed. */
   private scheduleReconnect(): void {
     if (this._closed || this._restarting || this._reconnecting) return;
     this._reconnecting = true;
-    const MAX_ATTEMPTS = 5;
-    const BASE_DELAY_MS = 2_000;
+    this.activeConnectionStatus?.('reconnecting');
+    const generation = this.reconnectGeneration;
     let attempt = 0;
-
     const tryOnce = async () => {
-      if (this._closed || this._restarting) {
-        this._reconnecting = false;
-        return;
-      }
+      if (this._closed || this._restarting || generation !== this.reconnectGeneration) return;
       attempt++;
       try {
-        if (this.ws) {
-          this.ws.removeAllListeners();
-          this.ws = undefined;
-        }
         await this.connectWebSocket();
-        // Bail if close/restart happened while connecting.
-        if (this._closed || this._restarting) {
-          this._reconnecting = false;
-          return;
-        }
-        if (this.activeExecutionAbort) {
-          // Active execution: don't block on waitForKernelReady — the
-          // kernel_info_request queues behind the running execute_request on
-          // the serial shell channel and would time out for long tasks.
-          // Instead, probe asynchronously: if the kernel is idle (execution
-          // finished during disconnect), the probe resolves and we abort with
-          // a descriptive error (exit code 1 — safe for CI/CD). If busy, it
-          // times out harmlessly — iopub messages flow through the new WS.
-          const abort = this.activeExecutionAbort;
-          this.waitForKernelReady()
-            .then(() => {
-              abort(new Error(
-                'Connection was temporarily lost during execution. Some output may be missing and the final status could not be verified.',
-              ));
-            })
-            .catch(() => {});
-        } else {
-          await this.waitForKernelReady();
-        }
-        log.debug(`Kernel WS reconnected (attempt ${attempt})`);
+        if (this._closed || this._restarting || generation !== this.reconnectGeneration) return;
+        if (!this.isConnected) throw new Error('Connection closed during recovery');
+        // Never enqueue a kernel_info probe behind a running execution or infer
+        // its outcome from a probe reply. Buffered messages retain their handler.
         this._reconnecting = false;
+        this.activeConnectionStatus?.('unknown');
+        log.debug(`Kernel WS reconnected (attempt ${attempt})`);
       } catch (err) {
-        log.debug(`Kernel WS reconnect attempt ${attempt} failed: ${err instanceof Error ? err.message : err}`);
-        if (attempt >= MAX_ATTEMPTS || this._closed || this._restarting) {
-          log.error(`Kernel WS reconnect gave up after ${attempt} attempts`);
-          this._reconnecting = false;
-          if (this.activeExecutionAbort) {
-            this.activeExecutionAbort(new Error(
-              'Connection lost and reconnect failed. The remote execution may still be running.',
-            ));
-            this.activeExecutionAbort = undefined;
-          }
-          return;
-        }
-        this._reconnectTimer = setTimeout(tryOnce, BASE_DELAY_MS * 2 ** (attempt - 1));
+        if (this._closed || this._restarting || generation !== this.reconnectGeneration) return;
+        log.debug(`Kernel WS reconnect attempt ${attempt} failed: ${err}`);
+        this._reconnectTimer = setTimeout(tryOnce, reconnectDelay(attempt));
       }
     };
-
-    this._reconnectTimer = setTimeout(tryOnce, BASE_DELAY_MS);
+    this._reconnectTimer = setTimeout(tryOnce, reconnectDelay(1));
   }
 
   private async connectWebSocket(): Promise<void> {
@@ -346,49 +322,41 @@ export class KernelConnection {
 
     return new Promise<void>((resolve, reject) => {
       const agent = getProxyAgent(wsEndpoint);
-      this.ws = new WebSocket(wsEndpoint, {
+      const ws = new WebSocket(wsEndpoint, {
         headers: {
           [COLAB_RUNTIME_PROXY_TOKEN_HEADER.key]: token,
           [COLAB_CLIENT_AGENT_HEADER.key]: COLAB_CLIENT_AGENT_HEADER.value,
         },
         ...(agent ? { agent } : {}),
+        handshakeTimeout: 30_000,
       });
-
-      const timeout = setTimeout(() => {
-        reject(new Error('WebSocket connection timed out'));
-      }, 30_000);
-
-      this.ws.on('open', () => {
-        clearTimeout(timeout);
-        log.debug('WebSocket connected');
+      this.ws = ws;
+      let opened = false;
+      this.rejectHandshake = reject;
+      ws.on('open', () => {
+        opened = true;
+        this.rejectHandshake = undefined;
+        this.stopHeartbeat?.();
+        this.stopHeartbeat = monitorWebSocket(ws);
+        for (const [id, error] of this.pendingAuthReplies) this.sendInputReply(id, error);
+        this.pendingAuthReplies.clear();
         resolve();
       });
-
-      this.ws.on('error', (err) => {
-        clearTimeout(timeout);
-        log.error('WebSocket error:', err);
-        reject(err);
+      ws.on('error', (err) => {
+        if (!opened) { this.rejectHandshake = undefined; reject(err); }
+        ws.terminate();
       });
-
-      this.ws.on('message', (data: WebSocket.RawData) => {
-        try {
-          const msg = JSON.parse(data.toString()) as JupyterMessage;
-          this.handleMessage(msg);
-        } catch (e) {
-          log.debug('Failed to parse WebSocket message:', e);
-        }
+      ws.on('message', (data: WebSocket.RawData) => {
+        if (this.ws !== ws) return;
+        try { this.handleMessage(JSON.parse(data.toString()) as JupyterMessage); }
+        catch (err) { log.debug('Failed to handle WebSocket message:', err); }
       });
-
-      this.ws.on('close', () => {
-        log.debug('WebSocket closed');
-        // Don't abort active executions here — let scheduleReconnect handle it.
-        // If reconnect succeeds, the execution continues (iopub messages flow
-        // through the new WS via the still-registered messageHandler). If
-        // reconnect fails, scheduleReconnect aborts the execution with an
-        // informative error. Intentional close()/restartKernel() remove all
-        // listeners before closing, so this handler only fires for unexpected
-        // disconnects.
-        this.scheduleReconnect();
+      ws.on('close', () => {
+        if (!opened) reject(new Error('Kernel WebSocket closed before opening'));
+        if (this.ws !== ws) return;
+        this.stopHeartbeat?.();
+        this.ws = undefined;
+        if (opened) this.scheduleReconnect();
       });
     });
   }
@@ -458,7 +426,10 @@ export class KernelConnection {
   }
 
   private sendInputReply(colabMsgId: number, error?: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this._closed) this.pendingAuthReplies.set(colabMsgId, error);
+      return;
+    }
 
     const reply: JupyterMessage = {
       header: {
@@ -566,9 +537,12 @@ export class KernelConnection {
     // messages are delivered. We mark done only when both have been received.
     let gotExecuteReply = false;
     let gotIdle = false;
+    let gotError = false;
+    let replyError: ErrorOutput | undefined;
 
     const maybeFinish = () => {
       if (gotExecuteReply && gotIdle) {
+        if (replyError && !gotError) push({ output: replyError });
         push({ done: true });
       }
     };
@@ -619,6 +593,7 @@ export class KernelConnection {
             });
             break;
           case 'error':
+            gotError = true;
             push({
               output: {
                 type: 'error',
@@ -639,6 +614,10 @@ export class KernelConnection {
 
       // Track execute_reply on shell channel
       if (channel === 'shell' && msgType === 'execute_reply') {
+        if (msg.content.status === 'error' || msg.content.status === 'aborted') {
+          replyError = { type: 'error', ename: msg.content.ename ?? 'ExecutionAborted',
+            evalue: msg.content.evalue ?? 'Execution aborted', traceback: msg.content.traceback ?? [] };
+        }
         gotExecuteReply = true;
         maybeFinish();
       }
@@ -649,10 +628,19 @@ export class KernelConnection {
     // Register callbacks so external events can unblock this generator.
     this.activeExecutionAbort = (err: Error) => push({ error: err });
 
-    // Send the execute request
-    this.ws.send(JSON.stringify(request));
+    this.activeConnectionStatus = (state) => push({ output: {
+      type: 'status', executionState: state,
+      message: state === 'reconnecting'
+        ? 'Connection lost; reconnecting without resubmitting code. Remote execution may still be running.'
+        : 'Execution outcome is unverified; waiting for the original reply and idle. Some output may be missing.',
+    } });
 
     try {
+      // Never retry this send: a failed delivery acknowledgement is ambiguous.
+      const reportStatus = this.activeConnectionStatus;
+      this.ws.send(JSON.stringify(request), (err) => {
+        if (err) reportStatus?.('unknown');
+      });
       while (true) {
         if (queue.length === 0) {
           waiting = new Promise<void>((r) => {
@@ -675,6 +663,7 @@ export class KernelConnection {
     } finally {
       this.messageHandlers.delete(msgId);
       this.activeExecutionAbort = undefined;
+      this.activeConnectionStatus = undefined;
     }
   }
 }

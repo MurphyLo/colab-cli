@@ -78,7 +78,7 @@ export function encode(msg: ClientMessage | ServerMessage): string {
   return JSON.stringify(msg) + '\n';
 }
 
-export type ShellStatus = 'running' | 'closed';
+export type ShellStatus = 'running' | 'reconnecting' | 'closed';
 
 export interface ShellListEntry {
   shellId: number;

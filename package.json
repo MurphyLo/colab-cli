@@ -12,7 +12,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node --use-env-proxy dist/index.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "tsc --outDir .test-build && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@xterm/headless": "^6.0.0",

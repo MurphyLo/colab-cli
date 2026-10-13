@@ -17,7 +17,7 @@ import {
   normalizeRemotePath,
   buildChunkPlan,
   createTransferId,
-  sleep,
+  transferRetry,
   runPool,
   ensureRemoteDirectory,
   ensureRemoteParents,
@@ -58,7 +58,7 @@ async function verifyUploadedFile(
   remotePath: string,
   expectedSize: number,
 ): Promise<void> {
-  const metadata = await getContentsMetadata(conn.getProxyUrl(), conn.getToken(), remotePath);
+  const metadata = await transferRetry(() => getContentsMetadata(conn.getProxyUrl(), conn.getToken(), remotePath));
   if (!metadata || metadata.type !== 'file') {
     throw new Error(`Uploaded path is not a file: ${remotePath}`);
   }
@@ -74,21 +74,9 @@ async function uploadBase64Blob(
   expectedSize: number,
   retries: number,
 ): Promise<void> {
-  let lastError: unknown = null;
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      await ensureRemoteParents(conn, remotePath);
-      await putFileBase64(conn.getProxyUrl(), conn.getToken(), remotePath, base64Content);
-      await verifyUploadedFile(conn, remotePath, expectedSize);
-      return;
-    } catch (err) {
-      lastError = err;
-      if (attempt < retries) await sleep(1000 * attempt);
-    }
-  }
-  throw new Error(
-    `Upload failed after ${retries} attempts for ${remotePath}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
-  );
+  await ensureRemoteParents(conn, remotePath);
+  await transferRetry(() => putFileBase64(conn.getProxyUrl(), conn.getToken(), remotePath, base64Content), retries);
+  await verifyUploadedFile(conn, remotePath, expectedSize);
 }
 
 function readChunkAsBase64(fd: number, offset: number, size: number): string {

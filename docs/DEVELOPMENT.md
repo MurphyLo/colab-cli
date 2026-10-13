@@ -339,8 +339,8 @@ ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `f
 | `runtime resources` | `ColabClient.getResources(proxyUrl, token)` 查询 runtime 的 RAM / 磁盘 / GPU 使用情况 |
 | `runtime restart` | 通过 IPC 发送 `restart` 命令，守护进程内部重启 kernel。重启期间 `KernelConnection.isRestarting` 为 `true` |
 | `runtime destroy` | `RuntimeManager.destroy()` 调用 `stopDaemon(serverId)`（协议优先：发 `shutdown` 让守护进程自清理；socket 不可达或 5s 内未退出时回退 SIGTERM），然后 unassign |
-| Kernel WebSocket 断开 | 守护进程**继续运行**。`KernelConnection` 自动重连（指数退避，最多 5 次）。**活跃执行在重连期间不被中止**——重连成功后 iopub 消息通过新 WS 继续流入（messageHandler 仍注册），同时异步探测 kernel 状态：若 kernel 已 idle（执行在断连期间完成），则 abort generator 并报错（exit code 1，因为输出可能不完整）；若 kernel 仍 busy，则执行照常继续。重连全部失败后 abort 并返回 `exec_error`。无活跃执行时，重连期间 exec 返回 "retry in a few seconds"。shell / port-forward 不受影响 |
-| Terminal WebSocket 断开 | 守护进程**继续运行**。`TerminalConnection` 自动重连（指数退避，最多 5 次），成功后重新 `tmux switch-client` 恢复 shell。Shell 在重连期间保持 `running` 状态；仅当所有重试耗尽后才标记为 `closed` |
+| Kernel WebSocket 断开 | 保留 kernel/session 与执行 handler，持续重连（退避上限 30s）。执行标记为 reconnecting / unknown，仅收到原执行的 execute_reply + idle 才完成；不通过探测结果推断执行结局，不重发代码。详见 [网络恢复](NETWORK-RECOVERY.md) |
+| Terminal WebSocket 断开 | 持续重连，shell list 显示 reconnecting；先发送原 tmux 会话的重附着命令，再接受输入。断线输入明确失败 |
 | kernel 崩溃（segfault、`os._exit`） | Colab 自动重启 kernel → 新 kernel 发送 `status: starting` → `KernelConnection.handleMessage()` 检测到后 abort 活跃的 `executeAndStream` generator → `runExecution()` catch 调用 `store.fail()` → `crashed` 状态。参见 §4.7 |
 | 系统重启 | `.pid` / `.sock` 文件残留。`isDaemonRunning()` 以 socket 可达性为判据返回 false → `startDaemon()` spawn 新守护进程 → `claimSocket()` 发现 socket 文件为 stale 后 unlink 并 listen |
 
@@ -613,19 +613,15 @@ Layer 1 — status:starting 检测（主要路径）:
 
 Layer 2 — WebSocket close + reconnect（回退路径）:
 
-  WebSocket 连接断开（网络中断等）
-    → ws.on('close') 不再直接 abort，而是调用 scheduleReconnect()
-      → 重连成功：
-          有活跃执行时，捕获当前 abort 引用后异步探测 waitForKernelReady()
-            → 探测成功（kernel idle，执行已结束）：abort(Error('连接曾中断，输出可能不完整'))
-            → 探测超时（kernel busy，执行仍在进行）：无操作，iopub 继续通过新 WS 流入
-          无活跃执行时，同步 await waitForKernelReady()
-      → 重连失败（5 次耗尽）：abort(Error('reconnect failed')) → crashed 状态
+  WebSocket 断开或 pong 超时
+    → 保留原执行 handler，标记 reconnecting
+    → 同一 kernel + client session 持续重连（退避上限 30s）
+    → 重连后等待原请求的 execute_reply 和 idle；不发送完成探测
+    → 缺少最终消息时保留 unknown，不误报 crashed、不自动重跑
 ```
 
-**race condition 防护**：重连成功路径中，`activeExecutionAbort` 在异步 `waitForKernelReady()` 调用前被捕获到局部变量 `abort`。这防止了"旧执行正常完成 → finally 清除回调 → 新执行注册新回调 → 旧探测 resolve 后误调新回调"的竞态。
-
-**与显式重启的交互**：`restartKernel()` 先 `removeAllListeners()` 再 `close()` → 旧 close handler 不触发。但新 WS 的 `handleMessage()` 检测到 `status: starting` 后仍会 abort 活跃执行，这是正确行为。
+显式关闭会终止本地等待；显式重启会中止原执行的跟踪并重启 kernel。
+更多边界与部署说明见 [网络恢复](NETWORK-RECOVERY.md)。
 
 **`status: starting` 的安全性**：根据 Jupyter 协议，`execution_state: starting` 仅在 kernel 生命周期事件（首次启动、重启）时出现。正常执行只有 `busy` → `idle` 转换，不会误触发。
 
@@ -805,8 +801,8 @@ tmux switch-client -t cli-<shellId>
 
 **Session 生命周期**：
 - 正常退出（`exit` / Ctrl-D）：cli-<id> 内 bash 退出 → tmux 自动回收 session。无需额外处理。
-- 瞬时断连（WebSocket 丢失）：`TerminalConnection` 自动重连（指数退避 2s→32s，最多 5 次）。重连成功后 `onReconnected` 回调重新 `tmux switch-client -t cli-<id>`，shell 恢复。重连期间 shell 保持 `running` 状态。
-- 永久断连（重连耗尽）：shell 标记为 `closed`，cli-<id> session 残留在 runtime 上。下次 `shell_open` 若分到同 id（daemon 重启后），前述 `kill-session` 兜底清理。
+- 瞬时断连（WebSocket 丢失）：`TerminalConnection` 自动重连（指数退避，上限 30s，持续重试）。重连成功后 `onReconnected` 回调重新 `tmux switch-client -t cli-<id>`，shell 恢复。重连期间 shell list 显示 `reconnecting`。
+- 长时间断连：保留会话记录并持续尝试；不因五次失败而删除缓冲和会话。
 - daemon 关闭 shell 时不另发 `kill-session`：关闭时 WebSocket 已不可用，不存在可靠的 side channel；代价仅为小额 tmux session 残留，runtime 销毁即清空。
 
 **输出分发逻辑**：WebSocket 收到数据时，同时写入 `buffer.append()` 和 `attachedSocket`（如果有）。CLI detach 后输出仍持续缓冲，re-attach 时通过 buffer 回放。
@@ -875,9 +871,9 @@ colab shell attach 1       Daemon                    Colab Runtime
 
 **自动重连**（`scheduleReconnect()`）：
 - 触发条件：`onclose` 事件且非主动 `close()` 调用（即 `_closed === false`）
-- 策略：指数退避（2s → 4s → 8s → 16s → 32s），最多 5 次
+- 策略：持续重试，指数退避，上限 30s
 - 重连成功后触发 `onReconnected` 回调，daemon 在此回调中重新 `tmux switch-client -t cli-<shellId>` 恢复 shell 会话
-- 所有重试耗尽后才触发 `onClose` 回调，此时 shell 标记为 `closed`
+- 重试不耗尽；主动 close 会取消重连
 
 **`onError` 语义**（避免与 reconnect 竞态）：
 - `ws` 库在连接建立后遇到 ECONNRESET 等异常时通常先 emit `'error'` 再 emit `'close'`。若此时无条件向上层回调 `onError`，会在 `scheduleReconnect` 触发前就被 daemon 标记为 `closed`
@@ -885,7 +881,7 @@ colab shell attach 1       Daemon                    Colab Runtime
 - `server.ts onError` 另外用 `isReconnecting` 作二次兜底，抑制重连过程中连接尝试失败的噪音
 
 **ping 保活**（`startPing()`）：
-- 每 30 秒发送一次 WebSocket 层 `ping` 帧（`ws.ping()`），利用协议级 ping/pong 检测连接存活
+- 每 15 秒发送 WebSocket ping；10 秒未收到 pong 则 terminate 并重连。kernel 与 terminal 共用该机制
 - 与 `KeepAlive`（runtime 级 5 分钟心跳，防止 VM 回收）互补——前者保护单个 TTY WebSocket，后者保护整个 runtime
 - Interval 使用 `.unref()` 不阻止 Node.js 退出
 
@@ -915,7 +911,7 @@ terminal 的输入是原生 TTY 字节流——**所有键盘输入**（包括�
 
 | colab-cli | colab-vscode 源文件 | 迁移说明 |
 |-----------|---------------------|---------|
-| `terminal/terminal-connection.ts` | `colab/terminal/colab-terminal-websocket.ts` (`ColabTerminalWebSocket`) | **移植 + 增强**：保留核心逻辑——WebSocket 连接 `wss://<proxy>/colab/tty`、JSON 消息格式（`{"data":...}` / `{"cols":N,"rows":N}`）、pending message queue（CONNECTING 时入队，OPEN 后 flush）、disposed guard、readyState 检查。去掉：VS Code `EventEmitter`/`Disposable`/`Event` 接口 → 改为构造函数 `handlers` 回调；`ColabAssignedServer` → 改为 `getProxyUrl()`/`getToken()` getter（对齐 `KernelConnection` 模式）；`WebSocketClass` 注入（测试用）→ 直接 `import WebSocket`；`unexpected-response` handler（CLI 不需要 HTTP 响应体诊断）。新增：30s 连接超时、`connect()` 返回 `Promise<void>` 而非同步 void、`getProxyAgent()` 代理支持。**CLI 原创**：自动重连（指数退避，最多 5 次，参考 `KernelConnection.scheduleReconnect()`）、WebSocket ping 保活（30s 间隔） |
+| `terminal/terminal-connection.ts` | `colab/terminal/colab-terminal-websocket.ts` (`ColabTerminalWebSocket`) | **移植 + 增强**：保留核心逻辑——WebSocket 连接 `wss://<proxy>/colab/tty`、JSON 消息格式（`{"data":...}` / `{"cols":N,"rows":N}`）、断线输入拒绝（避免误报成功或重放副作用）、disposed guard、readyState 检查。去掉：VS Code `EventEmitter`/`Disposable`/`Event` 接口 → 改为构造函数 `handlers` 回调；`ColabAssignedServer` → 改为 `getProxyUrl()`/`getToken()` getter（对齐 `KernelConnection` 模式）；`WebSocketClass` 注入（测试用）→ 直接 `import WebSocket`；`unexpected-response` handler（CLI 不需要 HTTP 响应体诊断）。新增：30s 连接超时、`connect()` 返回 `Promise<void>` 而非同步 void、`getProxyAgent()` 代理支持。**CLI 原创**：自动重连（指数退避，上限 30s，持续重试，参考 `KernelConnection.scheduleReconnect()`）、WebSocket ping/pong 检测（15s 间隔，10s 超时） |
 | `terminal/terminal-buffer.ts` | 无对应 | **全新**：colab-vscode 直接操作 VS Code Terminal 面板（输出即时渲染，无缓冲需求）。colab-cli 因 daemon detach/attach 模式需要缓冲历史输出，使用有界环形缓冲区（100KB 上限，chunk-level 淘汰）。`getContents(tailBytes?)` 供 streaming attach 按字节回放原始数据。`getSnapshot(cols, rows, tailLines?)` 供 `--no-wait`/`--tail` 调用：内部 `VirtualScreen` 是一个最小化 VT 模拟器（覆盖 tmux 实际转发的光标定位 CUU/CUD/CUF/CUB/CHA/CUP、EL/ED、IL/DL/ICH/DCH、SU/SD、VPA、SCP/RCP、ESC 7/8/D/E/M/c，以及 CR/LF/BS/HT；DEC 私有模式、SGR、OSC 消费后忽略），维护 `cols × rows` 字符网格 + 滚动历史（上限 1000 行），滚出屏幕的行入 scrollback，最后拼接为纯文本 —— 使 rich.progress / tqdm 多行进度面板在快照里折叠为最终可见状态，而不是把每一帧都当成独立行追加 |
 | `commands/shell.ts` `runShellSession()` | `colab/terminal/colab-pseudoterminal.ts` (`ColabPseudoTerminal`) | **重写**：colab-vscode 通过 VS Code `Pseudoterminal` 接口桥接（`handleInput()` → WS send、`onDidWrite` ← WS receive、`setDimensions()` → WS resize）。colab-cli 因无 VS Code API，直接操作 `process.stdin`（raw mode）和 `process.stdout`：stdin `data` → `shellInput`、`SIGWINCH` → `shellResize`、`shellStream` → stdout write。新增 `Ctrl+\` detach 拦截（colab-vscode 终端面板关闭即断开，无 detach 概念） |
 | `commands/shell.ts` 命令结构 | `colab/commands/terminal.ts` (`openTerminal()`) | **重写**：colab-vscode 仅一个 `openTerminal()` 入口（创建 VS Code 终端面板）。colab-cli 拆分为 5 个子命令（`shell`/`attach`/`list`/`send` + 共享 `runShellSession`）以支持 daemon bg/attach 和 Agent 非阻塞模式 |

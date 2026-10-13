@@ -5,7 +5,7 @@ import type { KernelOutput } from '../jupyter/kernel-connection.js';
 import { CONFIG_DIR } from '../config.js';
 import { saveOutputImages } from './image-saver.js';
 
-export type ExecStatus = 'running' | 'input' | 'auth' | 'done' | 'error' | 'crashed';
+export type ExecStatus = 'running' | 'reconnecting' | 'unknown' | 'input' | 'auth' | 'done' | 'error' | 'crashed';
 
 interface Execution {
   id: number;
@@ -207,6 +207,9 @@ export class ExecutionStore {
     );
     exec.imageCounter = nextCounter;
 
+    if (stored.type === 'status' && (stored.executionState === 'reconnecting' || stored.executionState === 'unknown')) {
+      exec.status = stored.executionState;
+    }
     exec.outputCount++;
     if (exec.outputs.length < MAX_OUTPUTS_IN_MEMORY) {
       exec.outputs.push(stored);
@@ -301,7 +304,7 @@ export class ExecutionStore {
     let cleared = 0;
     for (const id of ids) {
       const exec = this.executions.get(id);
-      if (exec && exec.status !== 'running' && exec.status !== 'input' && exec.status !== 'auth') {
+      if (exec && exec.status !== 'running' && exec.status !== 'input' && exec.status !== 'auth' && exec.status !== 'reconnecting' && exec.status !== 'unknown') {
         this.removeExecution(id);
         cleared++;
       }
@@ -313,7 +316,7 @@ export class ExecutionStore {
   private gc(): void {
     if (this.executions.size <= MAX_RETAINED_EXECS) return;
     const completed = [...this.executions.values()]
-      .filter((e) => e.status !== 'running')
+      .filter((e) => ['done', 'error', 'crashed'].includes(e.status))
       .sort((a, b) => a.id - b.id);
     const toRemove = this.executions.size - MAX_RETAINED_EXECS;
     for (let i = 0; i < toRemove && i < completed.length; i++) {

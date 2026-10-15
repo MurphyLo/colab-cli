@@ -163,9 +163,7 @@ export async function mountDrive(
   }
 
   // Check for errors in output
-  const errorOutput = collected.find(
-    (o) => o.type === 'error' || (o.type === 'stream' && o.name === 'stderr'),
-  );
+  const errorOutput = collected.find((o) => o.type === 'error');
   if (errorOutput && errorOutput.type === 'error') {
     throw new Error(`Drive mount failed: ${errorOutput.ename}: ${errorOutput.evalue}`);
   }

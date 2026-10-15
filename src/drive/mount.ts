@@ -123,6 +123,7 @@ _proc = subprocess.Popen(
     },
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
+    start_new_session=True,
 )
 
 for _i in range(${MOUNT_TIMEOUT_S}):

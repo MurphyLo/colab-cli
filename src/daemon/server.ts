@@ -462,7 +462,7 @@ async function main() {
           if (active?.execId === execId) {
             active.pendingStdinResolve = () => {
               active.pendingStdinResolve = undefined;
-              store.clearPendingInput(execId);
+              if (!store.get(execId)?.recovery?.journal) store.clearPendingInput(execId);
             };
           }
           // Keep draining: replay may contain completion after an old prompt
@@ -481,6 +481,7 @@ async function main() {
         }
       }
       store.complete(execId);
+      void kernel.cleanupJournal(store.get(execId)?.recovery);
       const active = execState.activeExecution;
       if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
         active.attachedSocket.write(encode({ type: 'exec_done' }));

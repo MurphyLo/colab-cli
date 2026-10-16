@@ -187,6 +187,7 @@ export class ExecutionStore {
   }
 
   private applyRecovery(exec: Execution, recovery: ExecutionRecovery): void {
+    const progressed = !!recovery.journal && recovery.journal.cursor > (exec.recovery?.journal?.cursor ?? 0);
     exec.recovery = structuredClone(recovery);
     exec.pendingInput = recovery.pendingInput;
     exec.pendingAuth = recovery.pendingAuth
@@ -194,6 +195,7 @@ export class ExecutionStore {
       : undefined;
     if (exec.pendingInput) exec.status = 'input';
     else if (exec.pendingAuth) exec.status = 'auth';
+    else if (progressed) exec.status = 'running';
     else if (exec.status === 'input' || exec.status === 'auth') exec.status = 'unknown';
   }
 

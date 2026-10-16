@@ -15,12 +15,11 @@ Network changes do not restart the remote runtime or resubmit Python code.
   waiting for the original final messages. The execution remains reserved so
   another exec cannot accidentally duplicate its side effects. Received output
   is retained. `exec clear` and history GC do not delete these active records.
-- If final messages were permanently lost, `unknown` can remain indefinitely.
+- For legacy executions and non-Python kernels, if final messages were permanently lost, `unknown` can remain indefinitely.
   Inspect the task through its files / an independent shell; do not blindly
-  resubmit it. This does not implement a remote execution journal or guarantee
-  lossless output. An explicit kernel restart still resets
+  resubmit it. These legacy paths do not have a remote journal. An explicit kernel restart still resets
   Python state and ends the tracked execution.
-- A recovered final status does **not** certify complete output: messages sent
+- On those legacy paths, a recovered final status does **not** certify complete output: messages sent
   before the server noticed the disconnect may be absent. Connection warnings
   stay in the execution log. Offline buffering was behaviorally verified on an
   isolated CPU runtime; it is not a guarantee for every Colab runtime.
@@ -85,3 +84,59 @@ local daemon after its active work has finished. A remote runtime restart or
 recreation is not required for these transport changes. An older running daemon
 must finish its active execution before deployment: it has not written the new
 recovery checkpoints.
+
+## Python message journal
+
+New Python connections install and confirm a versioned `Session.send`/`recv`
+instance hook before accepting user code. Installation is silent and excluded
+from history. No extra process, listening port, code wrapper or stdout replacement
+is used. A failed installation prevents new user code from being submitted.
+
+The hook writes each tracked message to a private, per-session/per-request NDJSON
+journal under `/tmp/colab-cli-journal-v1`, with monotonic sequence metadata, before
+sending it. Files roll at approximately 1 MiB (one large message may exceed that).
+Writes are flushed with fsync; metadata, MIME content and binary buffers are kept.
+Colab authorization messages without a parent request ID are associated with the
+current matching shell session. Password/input values are not journaled.
+
+The daemon merges live messages and Contents API reads by sequence. It checkpoints
+each applied sequence together with its output/protocol state. Reconciliation runs
+on adoption, reconnect, gaps, and every three seconds during unfinished journaled
+execution, independently of WebSocket health. HTTP failures/404 defer recovery;
+they never prove the request was not executed. Original reply **and** idle must
+be consumed in order before completion. Corrupt records or a failed journal are
+explicit errors, never silent missing output. Partial final lines wait for the
+next read, and missing sequence numbers are never skipped.
+
+Stdin replies retain pending state until a journaled remote receipt, a subsequent
+prompt, or completion. An unverified outstanding answer is not sent again: wait
+for recovery or interrupt. Receipt is not a guarantee user code consumed the
+answer successfully. Values/passwords are neither checkpointed nor replayed.
+
+After the daemon fsyncs the local terminal record it best-effort deletes that
+execution's remote journal. Failed cleanup retains files; there is no age-based
+expiry of unfinished logs. Runtime loss removes remote files. Disk failure,
+user tampering with hooks/files, kernel death and power loss are not transparent
+network recovery; no exactly-once execution claim is made. Already submitted
+legacy records and R/Julia keep their previous behavior. Shell and full transfer
+orchestration are unchanged.
+
+`tests/kernel-journal.test.mjs` covers missing output/completion, duplicates,
+ordering, lost prompts, cursor adoption, corrupt journals and bootstrap failure.
+The opt-in `tests/live/kernel-journal.mjs <stored-server-uuid>` creates an isolated
+kernel on an existing runtime, blocks live receiving and HTTP reads until remote
+completion, then verifies output recovery, stdin and rich results. Run after
+`npm run build` with `node --use-env-proxy` and your normal proxy environment.
+It is not run by `npm test` and does not destroy the runtime.
+
+### Recorded acceptance (2026-10-16)
+
+On a real CPU Colab runtime, a user-controlled Wi-Fi outage of approximately
+60 seconds left the daemon PID unchanged. All 90 numbered outputs matched the
+independent remote file byte-for-byte after recovery, with one START and a
+persisted done event. A separate SIGKILL/restart during a 30-output execution
+changed the daemon PID and recovered all 30 outputs, also with one START and done.
+The opt-in isolated-kernel test additionally covers completion while both live
+receiving and HTTP reads are blocked, rich outputs, input/getpass, exceptions,
+interrupt and Colab request/reply routing (credential propagation mocked).
+These are concrete acceptance runs, not guarantees for kernel/VM or disk loss.

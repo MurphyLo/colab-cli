@@ -1470,3 +1470,22 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 ---
 
 *最后更新：2026-03-28 实现 stdin 透传（input/getpass）+ Ctrl+C kernel 中断，新增 §4.5 含完整源码溯源*
+
+
+### Python 执行的远端消息日志
+
+`src/jupyter/kernel-journal.ts` 提供版本化的内核消息钩子与 Contents API
+补读。Python 连接在提交用户代码前确认安装完成；不新增进程或端口，不包装
+用户代码。钩子先按执行请求写入分段 NDJSON（含 seq、完整消息元数据和 buffers），
+fsync 后再发原生消息。日志位于 `/tmp/colab-cli-journal-v1/<session>/<msgId>/`。
+
+`KernelConnection` 将实时和补读消息合并，严格连续处理 seq；
+`ExecutionRecovery.journal.cursor` 与本地输出一起 checkpoint。断线、daemon
+接管、缺号和三秒巡检均可触发补读，终态必须等原请求的 reply 和 idle 按序应用。
+404/无日志不代表代码未执行，不重发执行请求；损坏或写失败显式报错，不跳号。
+
+stdin 只记录回复 ID 的接收确认，不记录值或密码；回复结果不确定时拒绝第二次
+发送，避免误答下一提示。授权保留现有 OAuth 流程，带日志的 Colab 请求先排序
+再处理。只有本地终态已持久化，daemon 才尝试清理远端日志；失败保留，无 TTL
+清理活跃执行。旧执行和 R/Julia 沿用旧恢复路径。详细限制及实机测试入口见
+[NETWORK-RECOVERY.md](NETWORK-RECOVERY.md)。

@@ -19,6 +19,15 @@ function kernel(url) {
   return k;
 }
 
+test('checkpoint failure prevents submission of side-effecting code', async () => {
+  const k = kernel('unused');
+  let sends = 0;
+  k.ws = { readyState: 1, send() { sends++; } };
+  const outputs = await k.execute('side_effect()', () => { throw new Error('disk full'); });
+  await assert.rejects(outputs.next(), /disk full/);
+  assert.equal(sends, 0);
+});
+
 test('half-open socket terminates without a pong; healthy socket stays open', t => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
   for (const healthy of [false, true]) {

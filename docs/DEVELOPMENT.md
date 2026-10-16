@@ -314,7 +314,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 {"event":"done"}
 ```
 
-**恢复机制**：守护进程重启时，扫描日志目录恢复执行历史。从 `start` 事件恢复 `outputDir`，从 `output` 事件中的 `savedPaths` 统计已保存图片数量以重建 `imageCounter`，确保后续执行的文件编号连续。缺少终止事件（`done`/`error`）的执行被标记为错误（"Daemon restarted during execution"）。
+**恢复机制**：守护进程先取得 IPC socket 所有权，再扫描日志恢复执行历史。`checkpoint` 事件将 kernel/client session/request ID、完成信号、输入/认证等待状态与输出一起持久化；写入在提交代码或向 CLI 交付输出之前完成。未结束且有 checkpoint 的执行占用执行槽位，新 daemon 先恢复 handler 再用原身份重连，不发送代码或 readiness probe。旧版没有 checkpoint 的未完成记录无法接管。`output` 和 `checkpoint.output` 都用于恢复图片计数与历史。详见 [网络恢复](NETWORK-RECOVERY.md)。
 
 **GC 策略**：保留最近 50 次执行，超出后删除最早的已完成执行（含日志文件）。另外 `exec clear` 命令支持手动清理：不带参数清理所有已完成执行，带 ID 清理指定执行。
 
@@ -326,7 +326,7 @@ CLI 与守护进程之间使用 **NDJSON**（Newline-Delimited JSON）通信。
 | `running` | 有 pendingInput | `input` | 等待 `input()` 响应 |
 | `done` | hasError=false | `done` | 正常完成 |
 | `done` | hasError=true | `error` | 完成但有 Python 异常（如 KeyboardInterrupt、ValueError） |
-| `error` | — | `crashed` | kernel 进程崩溃（segfault、`os._exit`）、WebSocket 断连、daemon 重启等 |
+| `error` | — | `crashed` | kernel 进程崩溃（segfault、`os._exit`）、显式重启等；网络断连与可接管的 daemon 重启不据此判定失败 |
 
 ELAPSED 列显示执行时长：运行中取 `now - startedAt`，已完成取 `finishedAt - startedAt`，格式为 `Xs`/`XmYs`/`XhYm`。`finishedAt` 持久化在 NDJSON 日志的 `done`/`error` 事件中，daemon 重启后仍能准确还原。
 

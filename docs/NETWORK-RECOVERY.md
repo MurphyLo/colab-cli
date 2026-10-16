@@ -17,8 +17,8 @@ Network changes do not restart the remote runtime or resubmit Python code.
   is retained. `exec clear` and history GC do not delete these active records.
 - If final messages were permanently lost, `unknown` can remain indefinitely.
   Inspect the task through its files / an independent shell; do not blindly
-  resubmit it. This patch does not implement a remote execution journal or
-  lossless daemon restart / adoption. An explicit kernel restart still resets
+  resubmit it. This does not implement a remote execution journal or guarantee
+  lossless output. An explicit kernel restart still resets
   Python state and ends the tracked execution.
 - A recovered final status does **not** certify complete output: messages sent
   before the server noticed the disconnect may be absent. Connection warnings
@@ -40,14 +40,48 @@ Network changes do not restart the remote runtime or resubmit Python code.
 
 ## Validation and deployment
 
+### Daemon restart adoption
+
+New executions checkpoint their kernel ID, client session ID, request message ID,
+completion signals, and pending stdin/auth state in the local execution log.
+The initial checkpoint is flushed before submitting code; subsequent output and
+protocol progress are written together before notifying an attached CLI.
+
+After a daemon restart, the unfinished execution reserves the execution slot.
+Its handler is installed before reconnecting to the original kernel/session, so
+immediate Jupyter replay can be processed. Adoption sends neither another
+`execute_request` nor a `kernel_info` readiness probe. Partial completion signals
+survive restarts. Pending stdin can be answered through `exec send --stdin` or
+`exec attach`; pending Colab authorization is re-established by the daemon.
+
+The foreground CLI's IPC connection does not automatically reconnect. Use
+`colab exec list` and `colab exec attach <id>` after restarting the daemon; these
+commands start the daemon if necessary. An execution remains `unknown` when
+original completion messages are unavailable, rather than being resubmitted.
+If the daemon dies between checkpointing a request and sending it, that request
+also remains uncertain: recovery intentionally never sends the code again.
+
+Only executions started by the updated daemon have recovery metadata. Old
+unfinished logs cannot be retroactively adopted. Server buffering can still be
+lost (including when another client replaces the buffered session); kernel/VM
+loss cannot be repaired by local checkpoints. Input delivery acknowledged by
+the local WebSocket is not a guarantee of remote receipt. Stdin values/passwords
+are not checkpointed or automatically resent.
+
+Shell/tmux adoption and resuming an entire `fs` transfer are outside this change.
+Only the kernel execution steps within chunked transfers use this tracking.
+
 `npm test` compiles to `.test-build` and runs local mock-server / fault tests.
 It does not contact Colab, read credentials, or restart any daemon. Tests cover
 half-open sockets, repeated retry failure, original-session replay (including
 reply-before-output ordering), uncertain completion, input errors, tmux restore
-ordering and atomic downloads.
+ordering and atomic downloads. Adoption tests kill and replace real child
+processes at output, completion, stdin and auth boundaries, and exercise the
+daemon's IPC attach/send and shutdown paths against a local mock backend.
 
 `npm run build` updates `dist`; `npm link` only updates the executable link.
 Neither replaces the code already loaded by a running daemon. Deploy the new
 local daemon after its active work has finished. A remote runtime restart or
-recreation is not required for these transport changes. The existing daemon's
-active execution/session tracking cannot yet be migrated losslessly.
+recreation is not required for these transport changes. An older running daemon
+must finish its active execution before deployment: it has not written the new
+recovery checkpoints.

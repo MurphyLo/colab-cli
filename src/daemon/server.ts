@@ -8,7 +8,7 @@ import { randomUUID, UUID } from 'crypto';
 import { AuthManager } from '../auth/auth-manager.js';
 import { AuthType } from '../colab/api.js';
 import { ColabClient, ColabRequestError } from '../colab/client.js';
-import { KernelConnection } from '../jupyter/kernel-connection.js';
+import { KernelConnection, type ExecutionRecovery, type KernelOutput } from '../jupyter/kernel-connection.js';
 import { KeepAlive } from '../runtime/keep-alive.js';
 import { ConnectionRefresher } from '../runtime/connection-refresher.js';
 import { getStoredServer, removeStoredServer } from '../runtime/storage.js';
@@ -93,6 +93,7 @@ async function claimSocket(server: net.Server, socketPath: string): Promise<void
 interface ActiveExecution {
   execId: number;
   attachedSocket?: net.Socket;
+  attachedOutputCount?: number;
   pendingAuthRequests: Map<string, (error?: string) => void>;
   stdinSendInFlight?: boolean;
   pendingStdinResolve?: (value: string | undefined) => void;
@@ -167,8 +168,24 @@ async function main() {
     () => authManager.logout(),
   );
 
+  // Own the IPC socket before reading or modifying execution checkpoints.
+  // A losing startup must never adopt the same session and consume its replay.
+  let dispatchClient: ((socket: net.Socket) => void) | undefined;
+  const queuedClients: net.Socket[] = [];
+  const socketServer = net.createServer(socket => {
+    if (dispatchClient) dispatchClient(socket);
+    else queuedClients.push(socket);
+  });
+  await claimSocket(socketServer, SOCKET_PATH);
+  fs.chmodSync(SOCKET_PATH, 0o600);
+  fs.writeFileSync(PID_FILE, String(process.pid));
+
   const store = new ExecutionStore(serverId);
   const execState: { activeExecution?: ActiveExecution } = {};
+  const recovering = store.recoverable();
+  if (recovering) {
+    execState.activeExecution = { execId: recovering.id, pendingAuthRequests: new Map() };
+  }
   const shellState: {
     shells: Map<number, ActiveShell>;
     nextShellId: number;
@@ -179,7 +196,6 @@ async function main() {
   } = { sessions: new Map(), nextId: 1 };
   let shuttingDown = false;
   let runtimeReleaseHandled = false;
-  let socketServer: net.Server | undefined;
 
   const shutdown = (runtimeReleasedMessage?: string) => {
     if (shuttingDown) return;
@@ -398,18 +414,19 @@ async function main() {
   // Node doesn't log unhandledRejection; later `await kernelReady` calls in
   // exec handlers still see the rejected state and fail the exec cleanly.
   console.log('Connecting to kernel...');
-  const kernelReady = kernel.connect().then(() => {
-    console.log('Kernel connected');
+  const kernelReady = Promise.resolve().then(async () => {
+    if (!recovering) await kernel.connect();
+    console.log(recovering ? 'Restoring kernel execution' : 'Kernel connected');
   });
   kernelReady.catch((err) => {
     console.error('Kernel connection failed:', err instanceof Error ? err.message : err);
   });
 
   /** Run execution and route outputs to store + attached socket. */
-  async function runExecution(execId: number, code: string): Promise<void> {
+  async function runExecution(execId: number, code: string, recovery?: ExecutionRecovery): Promise<void> {
     try {
       await kernelReady;
-      if (!kernel.isConnected) {
+      if (!recovery && !kernel.isConnected) {
         const message = kernel.isReconnecting
           ? 'Kernel WebSocket is reconnecting, retry in a few seconds.'
           : 'Kernel WebSocket is disconnected. No code was submitted; retry after the connection is restored.';
@@ -420,10 +437,21 @@ async function main() {
         }
         return;
       }
-      const outputs = await kernel.execute(code);
+      const outputCounts = new WeakMap<KernelOutput, number>();
+      const checkpoint = (state: ExecutionRecovery, output?: KernelOutput) => {
+        const stored = store.checkpoint(execId, state, output);
+        if (stored && stored.type !== 'input_request') {
+          outputCounts.set(stored, store.get(execId)!.outputCount);
+        }
+        return stored;
+      };
+      const outputs = recovery
+        ? kernel.resume(recovery, checkpoint)
+        : await kernel.execute(code, checkpoint);
       for await (const output of outputs) {
         const active = execState.activeExecution;
         if (output.type === 'input_request') {
+          if (!store.get(execId)?.recovery?.pendingInput) continue;
           store.setPendingInput(execId, output.prompt, output.password);
           if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
             // Forward stdin request to attached client
@@ -431,25 +459,25 @@ async function main() {
               encode({ type: 'input_request', prompt: output.prompt, password: output.password }),
             );
           }
-          // Wait for stdin via exec_send, attached client, or interrupt
-          await new Promise<string | undefined>((resolve) => {
-            if (active?.execId === execId) {
-              active.pendingStdinResolve = resolve;
-            } else {
-              resolve(undefined);
-            }
-          });
           if (active?.execId === execId) {
-            active.pendingStdinResolve = undefined;
+            active.pendingStdinResolve = () => {
+              active.pendingStdinResolve = undefined;
+              store.clearPendingInput(execId);
+            };
           }
-          store.clearPendingInput(execId);
-          // Input is sent by the IPC handler before acknowledging it.
-          // undefined means interrupted — skip reply, continue consuming outputs
+          // Keep draining: replay may contain completion after an old prompt
+          // (for example another client interrupted while the daemon was down).
           continue;
         }
-        const stored = store.appendOutput(execId, output);
+        // Kernel checkpoints outputs synchronously before yielding, so a restart
+        // cannot lose queued output while this consumer waits for stdin.
+        const stored = output;
         if (active?.execId === execId && active.attachedSocket && !active.attachedSocket.destroyed) {
-          active.attachedSocket.write(encode({ type: 'output', output: stored }));
+          const count = outputCounts.get(output)!;
+          if (count > (active.attachedOutputCount ?? 0)) {
+            active.attachedSocket.write(encode({ type: 'output', output: stored }));
+            active.attachedOutputCount = count;
+          }
         }
       }
       store.complete(execId);
@@ -458,6 +486,7 @@ async function main() {
         active.attachedSocket.write(encode({ type: 'exec_done' }));
       }
     } catch (err) {
+      if (shuttingDown) return; // normal shutdown leaves the request adoptable
       const message = err instanceof Error ? err.message : String(err);
       store.fail(execId, message);
       const active = execState.activeExecution;
@@ -472,7 +501,7 @@ async function main() {
   }
 
   // Start Unix socket server early so CLI detects daemon quickly
-  socketServer = net.createServer((socket) =>
+  dispatchClient = (socket) =>
     handleClient(
       socket,
       kernel,
@@ -485,16 +514,9 @@ async function main() {
       forwardState,
       colabClient,
       server.endpoint,
-    ),
-  );
-
-  // Atomically claim the socket. If a peer daemon won the race, exit cleanly
-  // (without touching its files). Only after the listener is bound do we
-  // publish the PID file — that way `isDaemonRunning` never observes a PID
-  // belonging to a process that has not yet (or never will) bind the socket.
-  await claimSocket(socketServer, SOCKET_PATH);
-  fs.chmodSync(SOCKET_PATH, 0o600);
-  fs.writeFileSync(PID_FILE, String(process.pid));
+    );
+  for (const socket of queuedClients) dispatchClient(socket);
+  if (recovering) void runExecution(recovering.id, recovering.code, recovering.recovery);
   console.log('Daemon ready on', SOCKET_PATH);
 
   process.on('SIGTERM', () => shutdown());
@@ -632,6 +654,7 @@ function handleClient(
           const active = execState.activeExecution;
           if (active && active.execId === msg.execId) {
             active.attachedSocket = socket;
+            active.attachedOutputCount = exec.outputCount;
             // If there's a pending stdin request, forward it immediately
             if (exec.pendingInput) {
               send({

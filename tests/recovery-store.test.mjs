@@ -1,0 +1,30 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+test('checkpoints survive torn tails, preserve partial completion, and exclude finished executions', async t => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'colab-checkpoint-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.mock.method(os, 'homedir', () => home);
+  const { ExecutionStore } = await import('../.test-build/daemon/execution-store.js');
+  let store = new ExecutionStore('test');
+  const id = store.create('work()');
+  const state = { kernelId: 'k', clientSessionId: 's', msgId: 'm', gotIdle: false, gotExecuteReply: true, gotError: false };
+  store.checkpoint(id, state, { type: 'stream', name: 'stdout', text: 'saved' });
+  const file = path.join(home, '.config/colab-cli/exec-logs-test', `${id}.ndjson`);
+  fs.appendFileSync(file, '{"event":"checkpoint",');
+  store = new ExecutionStore('test');
+  assert.equal(store.recoverable().recovery.gotExecuteReply, true);
+  assert.equal(store.get(id).status, 'unknown');
+  assert.equal(store.clear(), 0);
+  store.checkpoint(id, { ...state, gotIdle: true });
+  store = new ExecutionStore('test');
+  assert.equal(store.recoverable().recovery.gotIdle, true);
+  assert.deepEqual(store.getOutputs(id).map(o => o.text), ['saved']);
+  store.complete(id);
+  store = new ExecutionStore('test');
+  assert.equal(store.recoverable(), undefined);
+  assert.equal(store.get(id).status, 'done');
+});

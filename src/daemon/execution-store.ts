@@ -1,13 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 import type { AuthType } from '../colab/api.js';
-import type { KernelOutput } from '../jupyter/kernel-connection.js';
+import type { KernelOutput, ExecutionRecovery } from '../jupyter/kernel-connection.js';
 import { CONFIG_DIR } from '../config.js';
 import { saveOutputImages } from './image-saver.js';
 
 export type ExecStatus = 'running' | 'reconnecting' | 'unknown' | 'input' | 'auth' | 'done' | 'error' | 'crashed';
 
 interface Execution {
+  recovery?: ExecutionRecovery;
   id: number;
   code: string;
   status: ExecStatus;
@@ -35,6 +36,7 @@ export interface ExecListEntry {
 }
 
 type LogEvent =
+  | { event: 'checkpoint'; recovery: ExecutionRecovery; output?: KernelOutput }
   | { event: 'start'; code: string; startedAt: string; outputDir: string }
   | { event: 'output'; output: KernelOutput }
   | { event: 'done'; finishedAt: string }
@@ -86,6 +88,7 @@ export class ExecutionStore {
     let outputCount = 0;
     let outputDir = this.defaultOutputDir;
     let imageCounter = 0;
+    let recovery: ExecutionRecovery | undefined;
 
     for (const line of lines) {
       let event: LogEvent;
@@ -93,6 +96,11 @@ export class ExecutionStore {
         event = JSON.parse(line);
       } catch {
         continue;
+      }
+      if (event.event === 'checkpoint') {
+        recovery = event.recovery;
+        if (!event.output || event.output.type === 'input_request') continue;
+        event = { event: 'output', output: event.output };
       }
       switch (event.event) {
         case 'start':
@@ -130,12 +138,16 @@ export class ExecutionStore {
       }
     }
 
-    // Incomplete execution = daemon crashed during run
+    // Old logs without protocol identity cannot be adopted safely.
     if (status === 'running') {
-      status = 'crashed';
-      errorMessage = 'Daemon restarted during execution';
-      finishedAt = new Date();
-      this.appendToFile(id, { event: 'crashed', message: errorMessage, finishedAt: finishedAt.toISOString() });
+      if (recovery) {
+        status = recovery.pendingInput ? 'input' : recovery.pendingAuth ? 'auth' : 'unknown';
+      } else {
+        status = 'crashed';
+        errorMessage = 'Daemon restarted before recoverable execution tracking was saved';
+        finishedAt = new Date();
+        this.appendToFile(id, { event: 'crashed', message: errorMessage, finishedAt: finishedAt.toISOString() });
+      }
     }
 
     this.executions.set(id, {
@@ -150,7 +162,39 @@ export class ExecutionStore {
       errorMessage,
       outputDir,
       imageCounter,
+      recovery,
+      pendingInput: status === 'input' ? recovery?.pendingInput : undefined,
+      pendingAuth: status === 'auth' ? recovery?.pendingAuth : undefined,
     });
+  }
+
+  recoverable(): Execution | undefined {
+    const active = [...this.executions.values()].filter(e => e.recovery && !['done', 'error', 'crashed'].includes(e.status));
+    if (active.length > 1) throw new Error('Multiple unfinished kernel executions; refusing ambiguous adoption');
+    return active[0];
+  }
+
+  /** Store protocol progress and output together, before exposing either to IPC. */
+  checkpoint(execId: number, recovery: ExecutionRecovery, output?: KernelOutput): KernelOutput | undefined {
+    const exec = this.executions.get(execId);
+    if (!exec) throw new Error(`Execution ${execId} not found`);
+    if (output && output.type !== 'input_request') {
+      return this.appendOutput(execId, output, recovery);
+    }
+    this.appendToFile(execId, { event: 'checkpoint', recovery, output });
+    this.applyRecovery(exec, recovery);
+    return output;
+  }
+
+  private applyRecovery(exec: Execution, recovery: ExecutionRecovery): void {
+    exec.recovery = structuredClone(recovery);
+    exec.pendingInput = recovery.pendingInput;
+    exec.pendingAuth = recovery.pendingAuth
+      ? { ...exec.pendingAuth, authType: recovery.pendingAuth.authType }
+      : undefined;
+    if (exec.pendingInput) exec.status = 'input';
+    else if (exec.pendingAuth) exec.status = 'auth';
+    else if (exec.status === 'input' || exec.status === 'auth') exec.status = 'unknown';
   }
 
   /**
@@ -195,7 +239,7 @@ export class ExecutionStore {
    * the *returned* output to any attached client so the same savedPaths
    * surface in both attach-time replay and live streaming.
    */
-  appendOutput(execId: number, output: KernelOutput): KernelOutput {
+  appendOutput(execId: number, output: KernelOutput, recovery?: ExecutionRecovery): KernelOutput {
     const exec = this.executions.get(execId);
     if (!exec) return output;
 
@@ -207,15 +251,19 @@ export class ExecutionStore {
     );
     exec.imageCounter = nextCounter;
 
+    this.appendToFile(execId, recovery
+      ? { event: 'checkpoint', recovery, output: stored }
+      : { event: 'output', output: stored });
+    if (recovery) this.applyRecovery(exec, recovery);
+
     if (stored.type === 'status' && (stored.executionState === 'reconnecting' || stored.executionState === 'unknown')) {
-      exec.status = stored.executionState;
+      exec.status = exec.pendingInput ? 'input' : exec.pendingAuth ? 'auth' : stored.executionState;
     }
     exec.outputCount++;
     if (exec.outputs.length < MAX_OUTPUTS_IN_MEMORY) {
       exec.outputs.push(stored);
     }
     if (stored.type === 'error') exec.hasErrorOutput = true;
-    this.appendToFile(execId, { event: 'output', output: stored });
     return stored;
   }
 
@@ -224,6 +272,8 @@ export class ExecutionStore {
     const exec = this.executions.get(execId);
     if (!exec) return;
     exec.status = exec.hasErrorOutput ? 'error' : 'done';
+    exec.pendingInput = undefined;
+    exec.pendingAuth = undefined;
     exec.finishedAt = new Date();
     this.appendToFile(execId, {
       event: exec.hasErrorOutput ? 'error' : 'done',
@@ -333,6 +383,11 @@ export class ExecutionStore {
 
   private appendToFile(execId: number, event: LogEvent): void {
     const filePath = path.join(this.logDir, `${execId}.ndjson`);
-    fs.appendFileSync(filePath, JSON.stringify(event) + '\n');
+    // Prefix a newline too: a torn final record must not swallow the next append.
+    const fd = fs.openSync(filePath, 'a', 0o600);
+    try {
+      fs.writeFileSync(fd, '\n' + JSON.stringify(event) + '\n');
+      fs.fsyncSync(fd);
+    } finally { fs.closeSync(fd); }
   }
 }

@@ -64,6 +64,21 @@ export type KernelOutput =
   | StatusOutput
   | InputRequestOutput;
 
+/** Serializable protocol state. Persist before sending code or acknowledging output. */
+export interface ExecutionRecovery {
+  kernelId: string;
+  clientSessionId: string;
+  msgId: string;
+  gotExecuteReply: boolean;
+  gotIdle: boolean;
+  gotError: boolean;
+  replyError?: ErrorOutput;
+  pendingInput?: InputRequestOutput;
+  pendingAuth?: { authType: AuthType; colabMsgId: number };
+}
+
+export type ExecutionCheckpoint = (state: ExecutionRecovery, output?: KernelOutput) => KernelOutput | undefined;
+
 // Jupyter message schemas for parsing
 const ColabAuthRequestSchema = z.object({
   header: z.object({
@@ -99,6 +114,9 @@ export class KernelConnection {
   private messageHandlers = new Map<string, (msg: JupyterMessage) => void>();
   /** Abort callback for the currently running executeAndStream generator. */
   private activeExecutionAbort?: (err: Error) => void;
+  private recovery?: ExecutionRecovery;
+  private checkpoint?: ExecutionCheckpoint;
+  private authInFlight = new Set<number>();
 
   constructor(
     private readonly getProxyUrl: () => string,
@@ -148,7 +166,7 @@ export class KernelConnection {
     await this.waitForKernelReady();
   }
 
-  async execute(code: string): Promise<AsyncGenerator<KernelOutput>> {
+  async execute(code: string, checkpoint?: ExecutionCheckpoint): Promise<AsyncGenerator<KernelOutput>> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket not connected');
     }
@@ -176,7 +194,19 @@ export class KernelConnection {
       channel: 'shell',
     };
 
-    return this.executeAndStream(msgId, executeRequest);
+    if (!this.kernelId) throw new Error('Kernel identity unavailable');
+    const state: ExecutionRecovery = {
+      kernelId: this.kernelId, clientSessionId: this.clientSessionId, msgId,
+      gotExecuteReply: false, gotIdle: false, gotError: false,
+    };
+    return this.executeAndStream(state, executeRequest, checkpoint);
+  }
+
+  /** Register the original request before opening a socket that may immediately replay. */
+  resume(state: ExecutionRecovery, checkpoint: ExecutionCheckpoint): AsyncGenerator<KernelOutput> {
+    this.kernelId = state.kernelId;
+    this.clientSessionId = state.clientSessionId;
+    return this.executeAndStream(structuredClone(state), undefined, checkpoint);
   }
 
   async interrupt(): Promise<void> {
@@ -242,9 +272,15 @@ export class KernelConnection {
     };
 
     const ws = this.ws;
+    const owner = this.recovery;
+    const pendingInput = owner?.pendingInput;
     await new Promise<void>((resolve, reject) => {
       ws.send(JSON.stringify(reply), (err) => err ? reject(err) : resolve());
     });
+    if (this.recovery && this.recovery === owner && this.recovery.pendingInput === pendingInput) {
+      this.recovery.pendingInput = undefined;
+      this.checkpoint?.(this.recovery);
+    }
     log.trace('Stdin reply sent');
   }
 
@@ -406,6 +442,13 @@ export class KernelConnection {
   }
 
   private handleEphemeralAuth(authType: string, colabMsgId: number): void {
+    if (this.authInFlight.has(colabMsgId)) return;
+    const owner = this.recovery;
+    if (this.recovery) {
+      this.recovery.pendingAuth = { authType: authType as AuthType, colabMsgId };
+      this.checkpoint?.(this.recovery);
+    }
+    this.authInFlight.add(colabMsgId);
     const executeAuth = this.requestEphemeralAuth
       ? this.requestEphemeralAuth(authType as AuthType)
       : import('../auth/ephemeral.js').then(({ handleEphemeralAuth }) =>
@@ -414,15 +457,16 @@ export class KernelConnection {
 
     executeAuth
       .then(() => {
-        this.sendInputReply(colabMsgId);
+        if (owner === this.recovery) this.sendInputReply(colabMsgId);
       })
       .catch((err: unknown) => {
+        if (owner !== this.recovery) return;
         log.error('Ephemeral auth failed:', err);
         this.sendInputReply(
           colabMsgId,
           err instanceof Error ? err.message : 'unknown error',
         );
-      });
+      }).finally(() => this.authInFlight.delete(colabMsgId));
   }
 
   private sendInputReply(colabMsgId: number, error?: string): void {
@@ -452,7 +496,16 @@ export class KernelConnection {
       parent_header: {},
     };
 
-    this.ws.send(JSON.stringify(reply));
+    this.ws.send(JSON.stringify(reply), (err) => {
+      if (err) {
+        if (!this._closed) this.pendingAuthReplies.set(colabMsgId, error);
+        return;
+      }
+      if (this.recovery?.pendingAuth?.colabMsgId === colabMsgId) {
+        this.recovery.pendingAuth = undefined;
+        this.checkpoint?.(this.recovery);
+      }
+    });
     log.trace('Input reply sent for colab_msg_id:', colabMsgId);
   }
 
@@ -509,12 +562,17 @@ export class KernelConnection {
   }
 
   private async *executeAndStream(
-    msgId: string,
-    request: JupyterMessage,
+    state: ExecutionRecovery,
+    request?: JupyterMessage,
+    checkpoint?: ExecutionCheckpoint,
   ): AsyncGenerator<KernelOutput> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (request && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
       throw new Error('WebSocket not connected');
     }
+    const msgId = state.msgId;
+    this.recovery = state;
+    this.checkpoint = checkpoint;
+    checkpoint?.(state);
 
     type QueueItem = { output: KernelOutput } | { done: true } | { error: Error };
 
@@ -523,6 +581,7 @@ export class KernelConnection {
     let waiting: Promise<void> | undefined;
 
     const push = (item: QueueItem) => {
+      if ('output' in item) item.output = checkpoint?.(state, item.output) ?? item.output;
       queue.push(item);
       if (resolve) {
         resolve();
@@ -535,14 +594,16 @@ export class KernelConnection {
     // Per Jupyter protocol, iopub status:idle is guaranteed to arrive AFTER
     // all output messages. execute_reply on shell may arrive before iopub
     // messages are delivered. We mark done only when both have been received.
-    let gotExecuteReply = false;
-    let gotIdle = false;
-    let gotError = false;
-    let replyError: ErrorOutput | undefined;
+    let finished = false;
 
     const maybeFinish = () => {
-      if (gotExecuteReply && gotIdle) {
-        if (replyError && !gotError) push({ output: replyError });
+      if (state.gotExecuteReply && state.gotIdle && !finished) {
+        finished = true;
+        if (state.replyError && !state.gotError) {
+          state.gotError = true;
+          push({ output: state.replyError });
+        }
+        checkpoint?.(state);
         push({ done: true });
       }
     };
@@ -553,6 +614,7 @@ export class KernelConnection {
 
       // Handle stdin input_request (Python input() / getpass())
       if (channel === 'stdin' && msgType === 'input_request') {
+        state.pendingInput = { type: 'input_request', prompt: msg.content?.prompt ?? '', password: msg.content?.password ?? false };
         push({
           output: {
             type: 'input_request',
@@ -593,7 +655,7 @@ export class KernelConnection {
             });
             break;
           case 'error':
-            gotError = true;
+            state.gotError = true;
             push({
               output: {
                 type: 'error',
@@ -605,7 +667,10 @@ export class KernelConnection {
             break;
           case 'status':
             if (msg.content.execution_state === 'idle') {
-              gotIdle = true;
+              state.gotIdle = true;
+              state.pendingInput = undefined;
+              state.pendingAuth = undefined;
+              checkpoint?.(state);
               maybeFinish();
             }
             break;
@@ -615,10 +680,11 @@ export class KernelConnection {
       // Track execute_reply on shell channel
       if (channel === 'shell' && msgType === 'execute_reply') {
         if (msg.content.status === 'error' || msg.content.status === 'aborted') {
-          replyError = { type: 'error', ename: msg.content.ename ?? 'ExecutionAborted',
+          state.replyError = { type: 'error', ename: msg.content.ename ?? 'ExecutionAborted',
             evalue: msg.content.evalue ?? 'Execution aborted', traceback: msg.content.traceback ?? [] };
         }
-        gotExecuteReply = true;
+        state.gotExecuteReply = true;
+        checkpoint?.(state);
         maybeFinish();
       }
     };
@@ -637,10 +703,22 @@ export class KernelConnection {
 
     try {
       // Never retry this send: a failed delivery acknowledgement is ambiguous.
-      const reportStatus = this.activeConnectionStatus;
-      this.ws.send(JSON.stringify(request), (err) => {
-        if (err) reportStatus?.('unknown');
-      });
+      if (request) {
+        const reportStatus = this.activeConnectionStatus;
+        this.ws!.send(JSON.stringify(request), (err) => {
+          if (err) reportStatus?.('unknown');
+        });
+      } else {
+        this.activeConnectionStatus('unknown');
+        if (state.pendingInput) push({ output: state.pendingInput });
+        maybeFinish();
+        // No session creation, kernel_info probe, or execute_request on adoption.
+        try { await this.connectWebSocket(); }
+        catch { this.scheduleReconnect(); }
+        if (state.pendingAuth) {
+          this.handleEphemeralAuth(state.pendingAuth.authType, state.pendingAuth.colabMsgId);
+        }
+      }
       while (true) {
         if (queue.length === 0) {
           waiting = new Promise<void>((r) => {
@@ -664,6 +742,8 @@ export class KernelConnection {
       this.messageHandlers.delete(msgId);
       this.activeExecutionAbort = undefined;
       this.activeConnectionStatus = undefined;
+      this.recovery = undefined;
+      this.checkpoint = undefined;
     }
   }
 }

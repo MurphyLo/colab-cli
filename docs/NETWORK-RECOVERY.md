@@ -95,7 +95,7 @@ is used. A failed installation prevents new user code from being submitted.
 The hook writes each tracked message to a private, per-session/per-request NDJSON
 journal under `/tmp/colab-cli-journal-v1`, with monotonic sequence metadata, before
 sending it. Files roll at approximately 1 MiB (one large message may exceed that).
-Writes reach the OS page cache before sending (no per-message fsync); metadata, MIME content and binary buffers are kept. SIGINT is deferred during the write/send critical section. Serialization uses Jupyter json_default.
+Writes reach the OS page cache before sending (no per-message fsync); metadata, MIME content and binary buffers are kept. A KeyboardInterrupt is not converted into a journal failure; masking SIGINT in the sending thread does not defer it, because CPython raises it in the main thread after any other kernel thread receives the signal. Serialization uses Jupyter json_default.
 Colab authorization messages without a parent request ID are associated with the
 current matching shell session. Password/input values are not journaled.
 

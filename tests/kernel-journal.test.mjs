@@ -146,3 +146,19 @@ test('journal polling skips unchanged files but reads a growing segment',async t
  assert.equal((await readJournal(url,'','session','exec',1,cache)).length,0);assert.equal(reads,1);
  size=2;assert.equal((await readJournal(url,'','session','exec',1,cache))[0].seq,2);assert.equal(reads,2);
 });
+
+test('a transient failure on a later segment does not mark earlier segments as read',async t=>{
+ const row=seq=>JSON.stringify({seq,header:{},content:{}})+'\n';
+ const files={'000000000001.jsonl':row(1)+row(2),'000000000003.jsonl':row(3)+row(4)};let failOnce=true;
+ const server=http.createServer((req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  const name=Object.keys(files).find(n=>req.url.includes(n));
+  if(!name)return res.end(JSON.stringify({content:Object.keys(files).map(n=>({name:n,size:files[n].length,last_modified:'stable'}))}));
+  if(name==='000000000003.jsonl'&&failOnce){failOnce=false;res.statusCode=502;return res.end('{}');}
+  res.end(JSON.stringify({content:files[name]}));
+ });
+ server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>server.close());
+ const url=`http://127.0.0.1:${server.address().port}`,cache=new Map();
+ await assert.rejects(readJournal(url,'','session','exec',0,cache),/502/);
+ assert.deepEqual((await readJournal(url,'','session','exec',0,cache)).map(x=>x.seq),[1,2,3,4]);
+});

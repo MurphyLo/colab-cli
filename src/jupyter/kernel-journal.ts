@@ -122,6 +122,9 @@ export async function readJournal(url: string, token: string, session: string, e
   if (listing.content.some((f: any) => f.name === 'FAILED')) throw new JournalIntegrityError('Remote execution journal failed; output completeness cannot be verified');
   const files = listing.content.filter((f: any) => /^\d{12}\.jsonl$/.test(f.name)).sort((a: any, b: any) => a.name.localeCompare(b.name));
   const rows: JournalMessage[] = [];
+  // Commit fingerprints only once every needed segment was read: a later failure
+  // discards these rows, so caching earlier segments would skip them forever.
+  const read = new Map<string, string>();
   for (let i = 0; i < files.length; i++) {
     if (i + 1 < files.length && Number(files[i + 1].name.slice(0, 12)) <= after) continue;
     const fingerprint = typeof files[i].size === 'number' && files[i].last_modified
@@ -130,8 +133,9 @@ export async function readJournal(url: string, token: string, session: string, e
     const file: any = await contentsRequest(url, token, `${encodeContentsPath(directory + '/' + files[i].name)}?format=text&type=file`, { timeoutMs: 10_000 });
     try { rows.push(...parseJournal(file.content).filter(row => row.seq > after)); }
     catch { throw new JournalIntegrityError('Remote execution journal is corrupt; output completeness cannot be verified'); }
-    if (fingerprint) cache?.set(files[i].name, fingerprint);
+    if (fingerprint) read.set(files[i].name, fingerprint);
   }
+  for (const [name, fingerprint] of read) cache?.set(name, fingerprint);
   return rows;
 }
 

@@ -561,7 +561,7 @@ function handleClient(
     active.stdinSendInFlight = true;
     try {
       await kernel.sendStdinReply(value);
-      if (active.pendingStdinResolve === resolve) {
+      if (active.pendingStdinResolve === resolve && !store.get(active.execId)?.recovery?.pendingInput?.requestId) {
         active.pendingStdinResolve = undefined;
         resolve(value);
       }

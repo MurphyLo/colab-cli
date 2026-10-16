@@ -95,22 +95,20 @@ is used. A failed installation prevents new user code from being submitted.
 The hook writes each tracked message to a private, per-session/per-request NDJSON
 journal under `/tmp/colab-cli-journal-v1`, with monotonic sequence metadata, before
 sending it. Files roll at approximately 1 MiB (one large message may exceed that).
-Writes are flushed with fsync; metadata, MIME content and binary buffers are kept.
+Writes reach the OS page cache before sending (no per-message fsync); metadata, MIME content and binary buffers are kept. SIGINT is deferred during the write/send critical section. Serialization uses Jupyter json_default.
 Colab authorization messages without a parent request ID are associated with the
 current matching shell session. Password/input values are not journaled.
 
 The daemon merges live messages and Contents API reads by sequence. It checkpoints
 each applied sequence together with its output/protocol state. Reconciliation runs
-on adoption, reconnect, gaps, and every three seconds during unfinished journaled
-execution, independently of WebSocket health. HTTP failures/404 defer recovery;
+on adoption, reconnect, gaps, and every three seconds after ten seconds of silence. Unchanged segment size/mtime avoids repeated file downloads. HTTP failures/404 defer recovery;
 they never prove the request was not executed. Original reply **and** idle must
 be consumed in order before completion. Corrupt records or a failed journal are
 explicit errors, never silent missing output. Partial final lines wait for the
-next read, and missing sequence numbers are never skipped.
+next read. Journal failure or a missing hook emits an explicit error and continues live tracking until the original terminal messages; it does not declare the kernel crashed or release its slot early. Completeness is no longer guaranteed in this degraded mode. Installation failures are retried before the next submission.
 
 Stdin replies retain pending state until a journaled remote receipt, a subsequent
-prompt, or completion. An unverified outstanding answer is not sent again: wait
-for recovery or interrupt. Receipt is not a guarantee user code consumed the
+prompt, or completion. Guarded answers carry a prompt ID and can be manually retried; the kernel discards answers for stale prompts. Legacy hooks without this guard reject ambiguous retries. Receipt is not a guarantee user code consumed the
 answer successfully. Values/passwords are neither checkpointed nor replayed.
 
 After the daemon fsyncs the local terminal record it best-effort deletes that
@@ -140,3 +138,17 @@ The opt-in isolated-kernel test additionally covers completion while both live
 receiving and HTTP reads are blocked, rich outputs, input/getpass, exceptions,
 interrupt and Colab request/reply routing (credential propagation mocked).
 These are concrete acceptance runs, not guarantees for kernel/VM or disk loss.
+
+### Review follow-up validation
+
+The follow-up to `5e69d20` covers dense-display SIGINT, Jupyter-compatible
+numpy/bytes metadata, missing-hook detection/reinstallation, retrying a dropped
+stdin answer with prompt fencing, and unchanged-segment read suppression.
+The opt-in live test retains these cases alongside offline completion recovery.
+
+Remaining boundaries: Colab authorization reply acknowledgement still follows the
+existing local-send path; the prompt-ID retry guard applies to ordinary stdin.
+Missing execute-request acceptance remains uncertain and is never retried.
+Failed journals are retained for diagnosis, and per-execution hook bookkeeping
+is retained for the lifetime of the kernel; output from background threads after
+idle may recreate a cleaned journal. These are not covered by this follow-up.

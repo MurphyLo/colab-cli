@@ -1477,15 +1477,15 @@ colab-cli 的协议层源自 colab-vscode 扩展。以下为关键对照：
 `src/jupyter/kernel-journal.ts` 提供版本化的内核消息钩子与 Contents API
 补读。Python 连接在提交用户代码前确认安装完成；不新增进程或端口，不包装
 用户代码。钩子先按执行请求写入分段 NDJSON（含 seq、完整消息元数据和 buffers），
-fsync 后再发原生消息。日志位于 `/tmp/colab-cli-journal-v1/<session>/<msgId>/`。
+完整 os.write 写入页缓存后再发原生消息（不逐条 fsync）。日志位于 `/tmp/colab-cli-journal-v1/<session>/<msgId>/`。
 
 `KernelConnection` 将实时和补读消息合并，严格连续处理 seq；
 `ExecutionRecovery.journal.cursor` 与本地输出一起 checkpoint。断线、daemon
-接管、缺号和三秒巡检均可触发补读，终态必须等原请求的 reply 和 idle 按序应用。
-404/无日志不代表代码未执行，不重发执行请求；损坏或写失败显式报错，不跳号。
+接管、缺号和静默十秒后的三秒巡检均可触发补读，终态必须等原请求的 reply 和 idle 按序应用。
+404/无日志不代表代码未执行，不重发执行请求；损坏、写失败或钩子缺失显式报错，转为实时跟踪；仍等原请求终态，不提前释放执行槽。
 
-stdin 只记录回复 ID 的接收确认，不记录值或密码；回复结果不确定时拒绝第二次
-发送，避免误答下一提示。授权保留现有 OAuth 流程，带日志的 Colab 请求先排序
+stdin 只记录回复 ID 的接收确认，不记录值或密码；回答携带提示 ID，可手动重试，内核丢弃过期回答以免误答下一提示。旧钩子不支持此保护时仍拒绝不确定的重发。
+授权保留现有 OAuth 流程，带日志的 Colab 请求先排序
 再处理。只有本地终态已持久化，daemon 才尝试清理远端日志；失败保留，无 TTL
 清理活跃执行。旧执行和 R/Julia 沿用旧恢复路径。详细限制及实机测试入口见
 [NETWORK-RECOVERY.md](NETWORK-RECOVERY.md)。

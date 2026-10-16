@@ -4,7 +4,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
 import { KernelConnection } from '../.test-build/jupyter/kernel-connection.js';
-import { parseJournal } from '../.test-build/jupyter/kernel-journal.js';
+import { parseJournal, readJournal } from '../.test-build/jupyter/kernel-journal.js';
 
 async function fixture(t) {
   const records = []; let fail = false;
@@ -51,9 +51,20 @@ test('no live final message needed; HTTP recovery also restores a lost input req
  await f.k.reconcileJournal();assert.equal((await stream.next()).done,true);
 });
 
-test('journal integrity failure cannot report successful completion', {timeout:5000}, async t=>{
- const f=await fixture(t);const stream=await f.k.execute('work()');const next=stream.next();const rejected=assert.rejects(next,/journal failed/);await f.ready();
- f.failed();await f.k.reconcileJournal();await rejected;
+test('journal failure reports incomplete output but keeps tracking until the real terminal messages', {timeout:5000}, async t=>{
+ const f=await fixture(t);const stream=await f.k.execute('work()');const next=stream.next();await f.ready();
+ f.failed();await f.k.reconcileJournal();
+ assert.equal((await next).value.ename,'JournalIntegrityError');
+ assert(f.k.recovery.journal.failure);assert.equal(f.k.recovery.gotIdle,false);
+ f.send(f.append('execute_reply',{status:'ok'},'shell'));f.send(f.append('status',{execution_state:'idle'}));
+ assert.equal((await stream.next()).done,true);
+});
+
+test('missing hook delivers live output with explicit capture failure instead of hanging', {timeout:5000}, async t=>{
+ const f=await fixture(t);const stream=await f.k.execute('work()');const outputs=[];
+ const consuming=(async()=>{for await(const x of stream) outputs.push(x);})();await f.ready();
+ for(const m of [f.append('stream',{name:'stdout',text:'hello'}),f.append('execute_reply',{status:'ok'},'shell'),f.append('status',{execution_state:'idle'})]){delete m.metadata.colab_cli_journal;f.send(m);}
+ await consuming;assert(outputs.some(x=>x.ename==='JournalIntegrityError'));assert(outputs.some(x=>x.text==='hello'));assert.equal(f.k.journalReady,false);
 });
 
 test('checkpointed cursor skips old rows on resume without resubmitting', {timeout:5000}, async t=>{
@@ -105,4 +116,33 @@ test('completed journal cleanup deletes recognized files before their directory'
  server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>server.close());
  await removeJournal(`http://127.0.0.1:${server.address().port}`,'','session','request');
  assert.deepEqual(requests.map(x=>x[0]),['GET','DELETE','DELETE','DELETE']);assert(requests[1][1].endsWith('000000000001.jsonl'));assert(requests.at(-1)[1].endsWith('/request'));
+});
+
+
+test('guarded input permits retry and accepts receipt of either answer for the same prompt', async t=>{
+ const f=await fixture(t);const stream=await f.k.execute('input()');const next=stream.next();await f.ready();
+ const prompt=f.append('input_request',{prompt:'value?',password:true},'stdin');
+ prompt.header.msg_id='prompt-1';prompt.metadata.colab_cli_input_guard=true;
+ await f.k.reconcileJournal();await next;
+ await f.k.sendStdinReply('secret');const first=f.k.recovery.pendingInputReplyId;
+ await f.k.sendStdinReply('secret');assert.notEqual(first,f.k.recovery.pendingInputReplyId);
+ f.append('colab_cli_input_received',{reply_msg_id:first,request_id:'prompt-1'});await f.k.reconcileJournal();
+ assert.equal(f.k.recovery.pendingInput,undefined);
+ await assert.rejects(f.k.sendStdinReply('late'),/not waiting/);
+ f.append('execute_reply',{status:'ok'},'shell');f.append('status',{execution_state:'idle'});
+ await f.k.reconcileJournal();assert.equal((await stream.next()).done,true);
+});
+
+test('journal polling skips unchanged files but reads a growing segment',async t=>{
+ let size=1,reads=0;
+ const server=http.createServer((req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  if(req.url.includes('.jsonl')){reads++;res.end(JSON.stringify({content:JSON.stringify({seq:size,header:{},content:{}})+'\n'}));}
+  else res.end(JSON.stringify({content:[{name:'000000000001.jsonl',size,last_modified:'stable'}]}));
+ });
+ server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>server.close());
+ const url=`http://127.0.0.1:${server.address().port}`,cache=new Map();
+ assert.equal((await readJournal(url,'','session','exec',0,cache)).length,1);
+ assert.equal((await readJournal(url,'','session','exec',1,cache)).length,0);assert.equal(reads,1);
+ size=2;assert.equal((await readJournal(url,'','session','exec',1,cache))[0].seq,2);assert.equal(reads,2);
 });

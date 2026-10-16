@@ -27,6 +27,36 @@ try {
   if(x.type==='input_request')await k.sendStdinReply(x.prompt==='first?'?'one':'two');
  }
  assert.match(input.filter(x=>x.type==='stream').map(x=>x.text).join(''),/GOT one two/);console.log('PASS input');
+ // Drop the first answer locally, retry it, then replay it at the next prompt.
+ const originalSend=k.ws.send.bind(k.ws);let dropped, retries=[];
+ k.ws.send=(data,...args)=>{
+  const msg=JSON.parse(String(data));
+  if(msg.header.msg_type==='input_reply'&&!dropped){dropped=data;args.at(-1)?.();return;}
+  return originalSend(data,...args);
+ };
+ try {
+  for await(const x of await k.execute("a=input('retry?'); b=input('next?'); print('RETRY',a,b)")){
+   retries.push(x);
+   if(x.type==='input_request'){
+    if(x.prompt==='retry?'){await k.sendStdinReply('one');await k.sendStdinReply('one');}
+    else {originalSend(dropped);await k.sendStdinReply('two');}
+   }
+  }
+ } finally {k.ws.send=originalSend;}
+ assert.match(retries.filter(x=>x.type==='stream').map(x=>x.text).join(''),/RETRY one two/);
+ assert(!retries.some(x=>x.type==='error'));console.log('PASS lost answer retry and stale prompt fencing');
+ const serialized=[];
+ for await(const x of await k.execute("import numpy as np\nfrom IPython.display import display\ndisplay({'text/plain':'metadata'},raw=True,metadata={'n':np.int64(3),'b':b'abc'})\nprint('SERIALIZED')"))serialized.push(x);
+ assert(serialized.some(x=>x.type==='display_data'));assert(!serialized.some(x=>x.type==='error'));
+ console.log('PASS numpy and bytes metadata');
+ for(let round=0;round<3;round++){
+  const dense=[];const stop=setTimeout(()=>void k.interrupt(),2000);
+  try {for await(const x of await k.execute("from IPython.display import display\nfor i in range(1000000): display(i)"))dense.push(x);}
+  finally{clearTimeout(stop);}
+  assert(dense.some(x=>x.type==='error'&&x.ename==='KeyboardInterrupt'));
+  assert(!dense.some(x=>x.type==='error'&&x.ename==='JournalIntegrityError'));
+ }
+ console.log('PASS dense display interrupt 3/3');
  const rich=[];for await(const x of await k.execute("from IPython.display import display,HTML,Image\ndisplay(HTML('<b>test</b>'))\ndisplay(Image(data=__import__('base64').b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9xkAAAAASUVORK5CYII=')))\n21*2"))rich.push(x);
  assert(rich.some(x=>x.data?.['image/png']));assert(rich.some(x=>x.data?.['text/html']));assert(rich.some(x=>x.data?.['text/plain']==='42'));console.log('PASS rich output');
  const errors=[];
@@ -43,5 +73,12 @@ try {
  for await (const x of await k.execute("from google.colab import _message\nr=_message.send_request('request_auth',{'authType':'auth_user_ephemeral'})\n_message.read_reply_from_input(r,timeout_sec=10)\nprint('AUTH_REPLY_OK')")) auth.push(x);
  assert.match(auth.filter(x=>x.type==='stream').map(x=>x.text).join(''),/AUTH_REPLY_OK/);
  console.log('PASS Colab request/reply routing (credential propagation mocked)');
+ const broken=[];
+ for await(const x of await k.execute("s=get_ipython().kernel.session; s.send=s._colab_cli_journal_v1['send']; print('UNTAPPED')"))broken.push(x);
+ assert(broken.some(x=>x.ename==='JournalIntegrityError'));assert.equal(k.journalReady,false);
+ k.journalRequired=true;
+ const repaired=[];for await(const x of await k.execute("print('REINSTALLED')"))repaired.push(x);
+ assert(!repaired.some(x=>x.type==='error'));assert(repaired.some(x=>x.text?.includes('REINSTALLED')));
+ console.log('PASS missing hook detection and reinstall');
  console.log('PASS all checks');
 } finally {clearTimeout(timer);k.close();await contentsRequest(s.proxyUrl,s.token,'/api/kernels/'+remote.id,{method:'DELETE'});}

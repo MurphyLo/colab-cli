@@ -52,6 +52,8 @@ export interface StatusOutput {
 }
 
 export interface InputRequestOutput {
+  /** Present only when the remote hook rejects replies to stale prompts. */
+  requestId?: string;
   type: 'input_request';
   prompt: string;
   password: boolean;
@@ -75,7 +77,7 @@ export interface ExecutionRecovery {
   gotError: boolean;
   replyError?: ErrorOutput;
   pendingInput?: InputRequestOutput;
-  journal?: { version: 1; cursor: number };
+  journal?: { version: 1; cursor: number; failure?: string };
   pendingInputReplyId?: string;
   pendingAuth?: { authType: AuthType; colabMsgId: number };
 }
@@ -171,14 +173,15 @@ export class KernelConnection {
     log.debug('Created kernel session:', this.kernelId);
     await this.connectWebSocket();
     await this.waitForKernelReady();
-    await this.installJournal();
+    try { await this.installJournal(); }
+    catch (error) { log.error("Journal installation deferred; next execution will retry:", String(error)); }
   }
 
   private async installJournal(): Promise<void> {
     this.journalReady = false;
     if (this.kernelName !== 'python3') return;
     this.journalRequired = true;
-    const code = JOURNAL_BOOTSTRAP + "\n_colab_cli_install_journal(" + JSON.stringify(this.clientSessionId) + ")";
+    const code = JOURNAL_BOOTSTRAP + "\n_colab_cli_install_journal(" + JSON.stringify(this.clientSessionId) + ")\ndel _colab_cli_install_journal";
     this.installingJournal = true;
     const timer = setTimeout(() => this.activeExecutionAbort?.(new Error('Kernel journal installation timed out; user code was not submitted')), 30_000);
     try {
@@ -239,7 +242,7 @@ export class KernelConnection {
 
   /** Only call after the daemon durably records the terminal event. */
   async cleanupJournal(state?: ExecutionRecovery): Promise<void> {
-    if (!state?.journal || !state.gotExecuteReply || !state.gotIdle) return;
+    if (!state?.journal || state.journal.failure || !state.gotExecuteReply || !state.gotIdle) return;
     try { await removeJournal(this.getProxyUrl(), this.getToken(), state.clientSessionId, state.msgId); }
     catch (error) { log.debug('Retaining completed remote journal:', String(error)); }
   }
@@ -310,7 +313,9 @@ export class KernelConnection {
     const ws = this.ws;
     const owner = this.recovery;
     if (owner?.journal) {
-      if (owner.pendingInputReplyId) throw new Error('Previous input delivery is unverified; refusing to send a second answer. Wait for recovery or interrupt the execution.');
+      if (!owner.pendingInput) throw new Error("Execution is not waiting for input");
+      if (owner.pendingInputReplyId && !owner.pendingInput.requestId) throw new Error('Previous input delivery is unverified; refusing to send a second answer. Wait for recovery or interrupt the execution.');
+      if (owner.pendingInput.requestId) reply.metadata.colab_cli_input_request = owner.pendingInput.requestId;
       owner.pendingInputReplyId = reply.header.msg_id;
       this.checkpoint?.(owner);
     }
@@ -452,7 +457,7 @@ export class KernelConnection {
     const authParse = ColabAuthRequestSchema.safeParse(msg);
     if (authParse.success) {
       const authMsg = authParse.data;
-      if (this.recovery?.journal) { void this.reconcileJournal?.(); return; }
+      if (this.recovery?.journal && !this.recovery.journal.failure) { void this.reconcileJournal?.(); return; }
       log.trace('Colab auth request received:', authMsg);
       this.handleEphemeralAuth(
         authMsg.content.request.authType,
@@ -621,8 +626,13 @@ export class KernelConnection {
     }
     const msgId = state.msgId;
     this.recovery = state;
-    this.checkpoint = checkpoint;
-    checkpoint?.(state);
+    let checkpointVersion = 0;
+    const persist = (output?: KernelOutput) => {
+      checkpointVersion++;
+      return checkpoint?.(state, output);
+    };
+    this.checkpoint = (_state, output) => persist(output);
+    persist();
 
     type QueueItem = { output: KernelOutput } | { done: true } | { error: Error };
 
@@ -631,7 +641,7 @@ export class KernelConnection {
     let waiting: Promise<void> | undefined;
 
     const push = (item: QueueItem) => {
-      if ('output' in item) item.output = checkpoint?.(state, item.output) ?? item.output;
+      if ('output' in item) item.output = persist(item.output) ?? item.output;
       queue.push(item);
       if (resolve) {
         resolve();
@@ -653,7 +663,7 @@ export class KernelConnection {
           state.gotError = true;
           push({ output: state.replyError });
         }
-        checkpoint?.(state);
+        persist();
         push({ done: true });
       }
     };
@@ -666,10 +676,10 @@ export class KernelConnection {
       }
       const msgType = msg.header?.msg_type;
       if (msgType === 'colab_cli_input_received') {
-        if (msg.content.reply_msg_id === state.pendingInputReplyId) {
+        if (msg.content.reply_msg_id === state.pendingInputReplyId || (msg.content.request_id && msg.content.request_id === state.pendingInput?.requestId)) {
           state.pendingInput = undefined;
           state.pendingInputReplyId = undefined;
-          checkpoint?.(state);
+          persist();
         }
         return;
       }
@@ -678,7 +688,7 @@ export class KernelConnection {
       // Handle stdin input_request (Python input() / getpass())
       if (channel === 'stdin' && msgType === 'input_request') {
         state.pendingInputReplyId = undefined;
-        state.pendingInput = { type: 'input_request', prompt: msg.content?.prompt ?? '', password: msg.content?.password ?? false };
+        state.pendingInput = { ...(msg.metadata?.colab_cli_input_guard ? { requestId: msg.header.msg_id } : {}), type: 'input_request', prompt: msg.content?.prompt ?? '', password: msg.content?.password ?? false };
         push({
           output: {
             type: 'input_request',
@@ -734,7 +744,7 @@ export class KernelConnection {
               state.gotIdle = true;
               state.pendingInput = undefined;
               state.pendingAuth = undefined;
-              checkpoint?.(state);
+              persist();
               maybeFinish();
             }
             break;
@@ -748,20 +758,54 @@ export class KernelConnection {
             evalue: msg.content.evalue ?? 'Execution aborted', traceback: msg.content.traceback ?? [] };
         }
         state.gotExecuteReply = true;
-        checkpoint?.(state);
+        persist();
         maybeFinish();
       }
     };
 
     const pending = new Map<number, JupyterMessage>();
+    const seen = new Set<string>();
+    const journalReadCache = new Map<string, string>();
     let stopped = false;
     let syncing = false;
-    const ingest = (msg: JupyterMessage) => {
-      if (!state.journal) { handler(msg); return; }
+    let lastMessageAt = Date.now();
+    const apply = (msg: JupyterMessage) => {
+      const before = checkpointVersion;
+      handler(msg);
+      if (checkpointVersion === before) persist();
+    };
+    const degradedMessage = (msg: JupyterMessage) => {
       const tag = msg.metadata?.colab_cli_journal;
-      if (!tag || tag.exec !== msgId) { void reconcile(); return; }
+      if (tag?.ok && tag.seq <= (state.journal?.cursor ?? 0)) return;
+      const key = msg.header?.msg_id ?? (tag?.ok ? 'seq:' + tag.seq : undefined);
+      if (key && seen.has(key)) return;
+      if (key) seen.add(key);
+      apply(msg);
+    };
+    const degrade = (reason: string) => {
+      if (!state.journal || state.journal.failure) return;
+      state.journal.failure = reason;
+      this.journalReady = false;
+      // Report capture failure, but keep the execution slot until its real end.
+      push({ output: { type: 'error', ename: 'JournalIntegrityError', evalue: reason +
+        '; continuing to track the original execution. Output completeness is unverified.', traceback: [] } });
+      for (const [, message] of [...pending].sort(([a], [b]) => a - b)) degradedMessage(message);
+      pending.clear();
+    };
+    const ingest = (msg: JupyterMessage) => {
+      if (stopped) return;
+      if (!state.journal) { handler(msg); return; }
+      lastMessageAt = Date.now();
+      const tag = msg.metadata?.colab_cli_journal;
+      if (state.journal.failure) { degradedMessage(msg); return; }
+      if (!tag || tag.exec !== msgId) {
+        degrade('Kernel journal hook is missing for this execution');
+        degradedMessage(msg);
+        return;
+      }
       if (!tag.ok || !Number.isSafeInteger(tag.seq) || tag.seq < 1) {
-        push({ error: new JournalIntegrityError('Remote execution journal failed; output completeness cannot be verified') });
+        degrade('Remote execution journal failed');
+        degradedMessage(msg);
         return;
       }
       if (tag.seq <= state.journal.cursor) return;
@@ -771,24 +815,24 @@ export class KernelConnection {
         const next = pending.get(seq)!;
         pending.delete(seq);
         state.journal.cursor = seq;
-        try { handler(next); checkpoint?.(state); }
+        try { apply(next); }
         catch (error) { stopped = true; push({ error: error instanceof Error ? error : new Error(String(error)) }); return; }
       }
       if (pending.size) void reconcile();
     };
     const reconcile = async () => {
-      if (!state.journal || stopped || finished || syncing) return;
+      if (!state.journal || state.journal.failure || stopped || finished || syncing) return;
       syncing = true;
       try {
-        const rows = await readJournal(this.getProxyUrl(), this.getToken(), state.clientSessionId, msgId, state.journal.cursor);
+        const rows = await readJournal(this.getProxyUrl(), this.getToken(), state.clientSessionId, msgId, state.journal.cursor, journalReadCache);
         if (!stopped) for (const row of rows) ingest(row);
       } catch (error) {
-        if (!stopped && error instanceof JournalIntegrityError) push({ error });
+        if (!stopped && error instanceof JournalIntegrityError) degrade(error.message);
         else log.debug('Journal reconciliation deferred:', String(error));
       } finally { syncing = false; }
     };
     this.reconcileJournal = reconcile;
-    const journalTimer = state.journal ? setInterval(() => { void reconcile(); }, 3000) : undefined;
+    const journalTimer = state.journal ? setInterval(() => { if (Date.now() - lastMessageAt >= 10_000) void reconcile(); }, 3000) : undefined;
     journalTimer?.unref();
     this.messageHandlers.set(msgId, ingest);
 

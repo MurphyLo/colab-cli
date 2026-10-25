@@ -264,6 +264,7 @@ colab drive-mount status                 # Check authorization status
 - One-time `login` saves a persistent refresh token. After that, `drive-mount` works without browser interaction on any new runtime.
 - Drive is mounted at `/content/drive`. Python code calling `drive.mount('/content/drive')` will detect the existing mount and return immediately.
 - Drive mount is lost after `colab runtime restart`; re-run `colab drive-mount` to restore it.
+- If `colab drive-mount` warns that credentials lack a scope, files added to Drive after mounting may not show up under `/content/drive`. Run `colab drive-mount login` to re-authorize.
 - When the env vars are not set, this command group is hidden and the standard browser-based auth flow is used as fallback.
 
 ### Choosing `fs` vs `drive`

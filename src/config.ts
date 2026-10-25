@@ -28,9 +28,13 @@ export const DRIVE_SCOPES = [
 // ephemeral auth flow that Colab normally requires for each new runtime.
 export const DRIVEFS_CLIENT_ID = process.env.COLAB_DRIVEFS_CLIENT_ID;
 export const DRIVEFS_CLIENT_SECRET = process.env.COLAB_DRIVEFS_CLIENT_SECRET;
+// client_channel lets DriveFS open its push channel (signaler-pa). Without it
+// DriveFS never learns of remote changes, so files added to Drive after the
+// mount stay invisible in directories it has already listed.
 export const DRIVEFS_SCOPES = [
   'email',
   'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/client_channel',
 ] as const;
 
 export const CONFIG_DIR = path.join(os.homedir(), '.config', 'colab-cli');

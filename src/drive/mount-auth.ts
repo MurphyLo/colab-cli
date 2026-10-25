@@ -42,29 +42,26 @@ export class MountAuthManager {
     return !!this.loadStored();
   }
 
-  async ensureAuthorized(): Promise<void> {
+  /**
+   * Ensure usable credentials exist, running the browser flow if they don't.
+   * With `requireCurrentScopes`, stored credentials that predate a scope
+   * addition are replaced too; they are kept until the new ones are stored.
+   */
+  async ensureAuthorized(options: { requireCurrentScopes?: boolean } = {}): Promise<void> {
     const stored = this.loadStored();
     if (stored) {
       if (stored.clientId !== DRIVEFS_CLIENT_ID) {
         log.warn('Drive mount OAuth client changed, re-authorizing...');
         this.removeStored();
-      } else {
-        this.oAuth2Client.setCredentials({
-          refresh_token: stored.refreshToken,
-          token_type: 'Bearer',
-        });
-        try {
-          await this.oAuth2Client.refreshAccessToken();
-          this.accessToken = this.oAuth2Client.credentials.access_token!;
+      } else if (await this.refreshStored(stored)) {
+        const missing = this.missingScopes();
+        if (!options.requireCurrentScopes || missing.length === 0) {
           return;
-        } catch (err) {
-          if (isInvalidGrantError(err)) {
-            log.warn('Drive mount credentials expired, re-authorizing...');
-            this.removeStored();
-          } else {
-            throw err;
-          }
         }
+        log.warn(`Drive mount credentials lack ${missing.join(', ')}, re-authorizing...`);
+      } else {
+        log.warn('Drive mount credentials expired, re-authorizing...');
+        this.removeStored();
       }
     }
 
@@ -108,6 +105,40 @@ export class MountAuthManager {
 
   getEmail(): string | undefined {
     return this.loadStored()?.email;
+  }
+
+  /**
+   * Required scopes missing from the current access token. Only meaningful
+   * after a token was obtained; returns [] while the granted set is unknown.
+   */
+  missingScopes(): string[] {
+    const scope = this.oAuth2Client.credentials.scope;
+    if (!scope) return [];
+    const granted = new Set(scope.split(' ').map(normalizeScope));
+    return DRIVEFS_SCOPES.filter((s) => !granted.has(normalizeScope(s)));
+  }
+
+  /** Whether stored credentials are valid and carry every required scope. */
+  async hasRequiredScopes(): Promise<boolean> {
+    const stored = this.loadStored();
+    if (!stored || stored.clientId !== DRIVEFS_CLIENT_ID) return false;
+    return (await this.refreshStored(stored)) && this.missingScopes().length === 0;
+  }
+
+  /** Refresh the stored token; false when Google rejects it as invalid_grant. */
+  private async refreshStored(stored: MountAuthSession): Promise<boolean> {
+    this.oAuth2Client.setCredentials({
+      refresh_token: stored.refreshToken,
+      token_type: 'Bearer',
+    });
+    try {
+      await this.oAuth2Client.refreshAccessToken();
+    } catch (err) {
+      if (isInvalidGrantError(err)) return false;
+      throw err;
+    }
+    this.accessToken = this.oAuth2Client.credentials.access_token!;
+    return true;
   }
 
   async logout(): Promise<void> {
@@ -167,6 +198,11 @@ export class MountAuthManager {
   private removeStored(): void {
     try { fs.unlinkSync(DRIVE_MOUNT_AUTH_FILE); } catch { /* ignore */ }
   }
+}
+
+// Token responses expand the `email` shorthand to its full URL.
+function normalizeScope(scope: string): string {
+  return scope === 'email' ? 'https://www.googleapis.com/auth/userinfo.email' : scope;
 }
 
 function isInvalidGrantError(err: unknown): boolean {

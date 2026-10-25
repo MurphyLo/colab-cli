@@ -9,7 +9,7 @@ export async function driveMountLoginCommand(): Promise<void> {
   const mountAuth = new MountAuthManager();
 
   if (isJsonMode()) {
-    if (mountAuth.isAuthorized()) {
+    if (await mountAuth.hasRequiredScopes()) {
       jsonResult({ command: 'drive-mount.login', alreadyLoggedIn: true, email: mountAuth.getEmail() ?? null });
     } else {
       await startBackgroundAuth('drive-mount');
@@ -17,7 +17,7 @@ export async function driveMountLoginCommand(): Promise<void> {
     return;
   }
 
-  await mountAuth.ensureAuthorized();
+  await mountAuth.ensureAuthorized({ requireCurrentScopes: true });
   const email = mountAuth.getEmail();
   console.log(`Drive mount authorized${email ? ` as ${email}` : ''}.`);
   console.log('Future runtimes can now mount Drive automatically with `colab drive-mount`.');
@@ -45,11 +45,22 @@ export async function driveMountCommand(
     await client.connect(server.id);
     spinner.text = 'Mounting Google Drive...';
     await mountDrive(client, mountAuth);
+    const missing = mountAuth.missingScopes();
+    const warning = missing.length > 0
+      ? `Drive mount credentials lack ${missing.join(', ')}: changes made on Drive after mounting may not ` +
+        'appear under /content/drive. Run `colab drive-mount login` to re-authorize.'
+      : undefined;
     if (isJsonMode()) {
       spinner.stop();
-      jsonResult({ command: 'drive-mount', endpoint: server.endpoint, mountPath: '/content/drive' });
+      jsonResult({
+        command: 'drive-mount',
+        endpoint: server.endpoint,
+        mountPath: '/content/drive',
+        ...(warning ? { warning } : {}),
+      });
     } else {
       spinner.succeed('Google Drive mounted at /content/drive');
+      if (warning) console.error(warning);
     }
   } catch (err) {
     spinner.fail('Drive mount failed');

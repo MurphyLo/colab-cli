@@ -1147,7 +1147,7 @@ part  = <destPath>.<指纹>.part
 | 项 | Drive 管理（`colab drive`） | Drive 自动挂载（`colab drive-mount`） |
 |---|---|---|
 | OAuth Client | rclone 公共凭据（默认） | DriveFS 内嵌凭据（环境变量） |
-| Scope | `email drive` | `email drive` |
+| Scope | `email drive` | `email drive client_channel` |
 | 存储文件 | `~/.config/colab-cli/drive-auth.json` | `~/.config/colab-cli/drive-mount-auth.json` |
 | 触发时机 | `colab drive login` | `colab drive-mount login` |
 
@@ -1185,6 +1185,8 @@ Python 脚本内部:
 
 **关键细节**：
 - DriveFS 要求 token 响应包含 `scope` 字段，否则报 "Received empty scopes" 并退出
+- 当前默认镜像的 DriveFS 128 只用 Punctual（`signaler-pa.googleapis.com`）接收远端变更推送（2026.01 镜像的 DriveFS 117 另有旧的 PushNotificationManager），需要 `client_channel` scope；缺少时日志报 `PERMISSION_DENIED: Request had insufficient authentication scopes`，挂载后在 Drive 新增的文件不会出现在已列出过的目录里。官方 `drive.mount()` 的 token 同样带 `client_channel`
+- 旧凭据缺少 `DRIVEFS_SCOPES` 中的 scope 时，`colab drive-mount` 照常挂载并提示重新授权；`colab drive-mount login` 检测到缺失会重新走授权流程，新凭据写入前保留旧凭据
 - metadata server 由这段一次性 Python 脚本在 runtime 内启动，并通过 `--metadata_server_auth_uri=...` 直接传给当前 DriveFS 进程
 - `drive.mount()` 在 Python 中调用时，先发 `blocking_request('request_auth')`，再检查 `os.path.isdir(mountpoint + '/My Drive')`。如果 auth 被旁路且挂载点仍存在，Colab 会打印 “Drive already mounted ...” 并直接返回
 

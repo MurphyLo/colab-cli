@@ -1,6 +1,6 @@
 import { DaemonClient } from '../daemon/client.js';
 import { MountAuthManager } from './mount-auth.js';
-import { DRIVEFS_CLIENT_ID, DRIVEFS_CLIENT_SECRET } from '../config.js';
+import { DRIVEFS_CLIENT_ID, DRIVEFS_CLIENT_SECRET, DRIVEFS_SCOPES } from '../config.js';
 import type { KernelOutput } from '../jupyter/kernel-connection.js';
 
 const MOUNT_TIMEOUT_S = 90;
@@ -13,7 +13,7 @@ const MOUNTPOINT = '/content/drive';
  * serving Drive access tokens to the DriveFS binary. The metadata server
  * handles automatic token refresh so long-running sessions don't break.
  */
-function buildMountScript(
+export function buildMountScript(
   accessToken: string,
   refreshToken: string,
   clientId: string,
@@ -28,7 +28,7 @@ _REFRESH_TOKEN = ${JSON.stringify(refreshToken)}
 _CLIENT_ID = ${JSON.stringify(clientId)}
 _CLIENT_SECRET = ${JSON.stringify(clientSecret)}
 _USER_EMAIL = ${JSON.stringify(email)}
-_SCOPES = 'email https://www.googleapis.com/auth/drive'
+_SCOPES = ${JSON.stringify(DRIVEFS_SCOPES.join(' '))}
 _TOKEN_EXPIRY = time.time() + 3500
 _TOKEN_LOCK = threading.Lock()
 

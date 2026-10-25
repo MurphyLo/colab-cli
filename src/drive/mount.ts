@@ -5,6 +5,7 @@ import type { KernelOutput } from '../jupyter/kernel-connection.js';
 
 const MOUNT_TIMEOUT_S = 90;
 const MOUNTPOINT = '/content/drive';
+const DRIVEFS_LOG = '/tmp/colab-cli-drivefs.log';
 
 /**
  * Build the Python code that runs inside the Colab kernel to mount Drive.
@@ -90,13 +91,20 @@ _srv = http.server.HTTPServer(('127.0.0.1', 0), _MetadataHandler)
 _port = _srv.server_address[1]
 threading.Thread(target=_srv.serve_forever, daemon=True).start()
 
-subprocess.run(['pkill', '-9', '-x', 'drive'], capture_output=True)
-time.sleep(0.3)
-
+# Unmount before killing DriveFS: a mount whose daemon is gone is a dead
+# endpoint, and os.makedirs on it raises FileExistsError.
 _mp = ${JSON.stringify(MOUNTPOINT)}
-os.makedirs(_mp, exist_ok=True)
 subprocess.run(['umount', '-f', _mp], capture_output=True)
 subprocess.run(['umount', _mp], capture_output=True)
+subprocess.run(['pkill', '-9', '-x', 'drive'], capture_output=True)
+time.sleep(0.3)
+# Covers a DriveFS that had already died and so could not be unmounted above.
+subprocess.run(['umount', '-l', _mp], capture_output=True)
+os.makedirs(_mp, exist_ok=True)
+
+# DriveFS logs to stdout continuously; an undrained pipe fills up and blocks it.
+_log_path = ${JSON.stringify(DRIVEFS_LOG)}
+_log = open(_log_path, 'wb')
 
 _dd = '/opt/google/drive'
 _proc = subprocess.Popen(
@@ -121,10 +129,12 @@ _proc = subprocess.Popen(
         'FUSE_DEV_NAME': '/dev/fuse',
         'PATH': os.environ.get('PATH', ''),
     },
-    stdout=subprocess.PIPE,
+    stdin=subprocess.DEVNULL,
+    stdout=_log,
     stderr=subprocess.STDOUT,
     start_new_session=True,
 )
+_log.close()
 
 for _i in range(${MOUNT_TIMEOUT_S}):
     time.sleep(1)
@@ -132,7 +142,8 @@ for _i in range(${MOUNT_TIMEOUT_S}):
         print(f'Drive mounted at {_mp}')
         break
     if _proc.poll() is not None:
-        _out = _proc.stdout.read().decode()[-800:] if _proc.stdout else ''
+        with open(_log_path, 'rb') as _f:
+            _out = _f.read()[-800:].decode(errors='replace')
         raise RuntimeError(f'DriveFS exited with code {_proc.returncode}: {_out}')
 else:
     _proc.terminate()

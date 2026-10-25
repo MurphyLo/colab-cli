@@ -40,3 +40,15 @@ test('mount script advertises DRIVEFS_SCOPES and is valid Python', () => {
   assert.ok(script.includes(`_SCOPES = ${JSON.stringify(DRIVEFS_SCOPES.join(' '))}`));
   execFileSync('python3', ['-c', 'import ast, sys; ast.parse(sys.stdin.read())'], { input: script });
 });
+
+test('mount script unmounts before killing DriveFS and does not pipe its output', () => {
+  const script = buildMountScript('access', 'refresh', 'client', 'secret', 'user@example.com');
+  const at = (needle) => {
+    const i = script.indexOf(needle);
+    assert.notEqual(i, -1, needle);
+    return i;
+  };
+  assert.ok(at("['umount', '-f', _mp]") < at("['pkill', '-9', '-x', 'drive']"));
+  assert.ok(at("['pkill', '-9', '-x', 'drive']") < at('os.makedirs(_mp'));
+  assert.ok(!script.includes('subprocess.PIPE'));
+});

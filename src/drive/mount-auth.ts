@@ -54,6 +54,12 @@ export class MountAuthManager {
         log.warn('Drive mount OAuth client changed, re-authorizing...');
         this.removeStored();
       } else if (await this.refreshStored(stored)) {
+        if (!stored.email) {
+          // Logins whose userinfo lookup failed stored no email; DriveFS
+          // would then be told the placeholder address.
+          const email = await this.fetchEmail(this.accessToken!);
+          if (email) this.storeCredentials({ ...stored, email });
+        }
         const missing = this.missingScopes();
         if (!options.requireCurrentScopes || missing.length === 0) {
           return;

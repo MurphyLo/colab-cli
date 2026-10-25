@@ -102,7 +102,10 @@ function spawnDaemon(params: {
   authType: BackgroundAuthType;
 }): void {
   const thisModule = fileURLToPath(import.meta.url);
+  // Same flag as the CLI shebang: without it native fetch (userinfo) ignores
+  // HTTPS_PROXY, while gaxios (token exchange) still succeeds.
   const child = spawn(process.execPath, [
+    '--use-env-proxy',
     thisModule,
     DAEMON_FLAG,
     JSON.stringify(params),

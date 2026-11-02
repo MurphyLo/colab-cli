@@ -174,6 +174,17 @@ async function execAction(
     void kernel.interrupt().catch((err) => log.error('Interrupt failed:', String(err)));
   };
   process.on('SIGINT', doInterrupt);
+  // `timeout`, agent tools and supervisors stop exec with SIGTERM. Exiting
+  // without an interrupt would leave the code running in the shared kernel,
+  // blocking every later call, and report success.
+  const origSigterm = process.rawListeners('SIGTERM').slice();
+  process.removeAllListeners('SIGTERM');
+  process.on('SIGTERM', () => {
+    const deadline = new Promise((resolve) => setTimeout(resolve, 5_000));
+    void Promise.race([kernel.interrupt(), deadline])
+      .catch((err) => log.error('Interrupt failed:', String(err)))
+      .finally(() => process.exit(143));
+  });
 
   const imageExecId = Math.floor(Date.now() / 1000);
   let imageCounter = 0;
@@ -196,6 +207,8 @@ async function execAction(
   } finally {
     process.removeAllListeners('SIGINT');
     for (const fn of origSigint) process.on('SIGINT', fn as (...args: any[]) => void);
+    process.removeAllListeners('SIGTERM');
+    for (const fn of origSigterm) process.on('SIGTERM', fn as (...args: any[]) => void);
     await session.closeKernel(kernel);
   }
   if (hasError) process.exitCode = 1;
@@ -233,14 +246,9 @@ async function runtimeRestartAction(): Promise<void> {
   const session = await getSession();
   const spinner = createSpinner('Restarting kernel...').start();
   try {
-    const kernel = await session.openKernel();
-    try {
-      await kernel.restartKernel();
-    } finally {
-      await session.closeKernel(kernel);
-    }
-    if (isJsonMode()) jsonResult({ command: 'runtime.restart', endpoint: session.endpoint });
-    else spinner.succeed('Kernel restarted');
+    const restarted = await session.restartCliKernel();
+    if (isJsonMode()) jsonResult({ command: 'runtime.restart', endpoint: session.endpoint, restarted });
+    else spinner.succeed(restarted ? 'Kernel restarted' : 'No CLI kernel yet; nothing to restart');
   } catch (err) {
     spinner.fail('Failed to restart kernel');
     throw err;

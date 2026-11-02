@@ -70,12 +70,19 @@ export function findBaseInText(origin: string, text: string): KaggleTarget | und
   };
 }
 
+/**
+ * For a stopped session the gateway answers 404 only after ~31 s. Wait
+ * longer than that so callers report sessionUnreachable() instead of a bare
+ * timeout.
+ */
+export const GATEWAY_TIMEOUT_MS = 45_000;
+
 export async function resolveKaggleTarget(raw: string): Promise<KaggleTarget> {
   const parsed = parseKaggleUrl(raw);
   if (parsed.form === 'path') return parsed.target;
 
   const url = `${parsed.origin}/api/kernelspecs?token=${encodeURIComponent(parsed.token)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS) });
   if (!res.ok) throw sessionUnreachable(res.status);
   const target = findBaseInText(parsed.origin, await res.text());
   if (!target) {

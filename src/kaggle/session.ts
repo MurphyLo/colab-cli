@@ -4,7 +4,7 @@ import { ResourcesSchema, type Resources } from '../colab/api.js';
 import { KernelConnection } from '../jupyter/kernel-connection.js';
 import { log } from '../logging/index.js';
 import type { ConnectionProvider } from '../transfer/common.js';
-import { sessionUnreachable, type KaggleTarget } from './url.js';
+import { GATEWAY_TIMEOUT_MS, sessionUnreachable, type KaggleTarget } from './url.js';
 
 /**
  * The Kaggle gateway authenticates by the token in the URL path. The shared
@@ -81,7 +81,7 @@ export class KaggleSession {
   async request(apiPath: string, init: RequestInit = {}): Promise<Response> {
     const res = await fetch(this.base + apiPath, {
       ...init,
-      signal: init.signal ?? AbortSignal.timeout(30_000),
+      signal: init.signal ?? AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
     });
     if (isGatewayRejection(res)) throw sessionUnreachable(res.status);
     return res;
@@ -129,8 +129,39 @@ export class KaggleSession {
       return kernel;
     } catch (err) {
       kernel.close();
-      throw err;
+      throw await this.explainConnectFailure(err);
     }
+  }
+
+  /**
+   * Restart through the REST API rather than a kernel connection: connecting
+   * waits for kernel_info, which a busy kernel never answers, and a busy
+   * kernel is the usual reason to restart. Returns false if none exists yet.
+   */
+  async restartCliKernel(): Promise<boolean> {
+    const id = (await this.findCliSession())?.kernel?.id;
+    if (!id) return false;
+    const res = await this.request(`/api/kernels/${encodeURIComponent(id)}/restart`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!res.ok) throw new Error(`Kernel restart failed: HTTP ${res.status}`);
+    return true;
+  }
+
+  /**
+   * All invocations share one kernel, so a kernel_info request queues behind
+   * any running execution, e.g. one left behind by a killed `exec`. Say so
+   * instead of reporting a generic readiness timeout.
+   */
+  private async explainConnectFailure(err: unknown): Promise<unknown> {
+    if (!(err instanceof Error) || err.message !== 'Kernel did not become ready in time') return err;
+    const state = await this.findCliSession().then((s) => s?.kernel?.execution_state, () => undefined);
+    if (state !== 'busy') return err;
+    return new Error(
+      'The CLI kernel is still busy with an earlier execution (possibly from an `exec` that was ' +
+        'killed). Wait for it to finish, or run `colab runtime restart` to stop it.',
+    );
   }
 
   /** Disconnect after clearing stale journals; never throws. */

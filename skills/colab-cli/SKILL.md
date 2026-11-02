@@ -1,6 +1,6 @@
 ---
 name: colab-cli
-description: "Use this skill for Google Colab operations: auth, runtime lifecycle, remote Python execution, interactive shell sessions, file transfer, etc. Also triggers when the user needs a GPU/TPU, wants to run deep learning tasks remotely, or has any task that would benefit from a cloud GPU environment."
+description: "Use this skill for Google Colab operations: auth, runtime lifecycle, remote Python execution, interactive shell sessions, file transfer, etc. Also triggers when the user needs a GPU/TPU, wants to run deep learning tasks remotely, or has any task that would benefit from a cloud GPU environment. Can also control a running Kaggle notebook session via its Kaggle Jupyter Server URL."
 metadata:
   short-description: Use the `colab` CLI for auth, runtime, exec, shell, fs, usage, Drive, and Drive mount tasks
 ---
@@ -274,6 +274,17 @@ colab drive-mount status                 # Check authorization status
 - **Drive as intermediary**: Local → Colab: `colab drive upload` locally, then copy from the Drive mount to the target on the runtime (mount Drive first if needed). Colab → Local: copy the file to the Drive mount on the runtime, then `colab drive download <file-id>` locally.
 - Use `colab drive-mount` when the user wants to access Drive files from the runtime without browser auth prompts.
 - If the user wants a file visible inside Colab after mounting Drive, upload it with `colab drive` rather than forcing it into `/content`.
+
+## Kaggle Mode
+
+When `COLAB_KAGGLE_URL` is set, `colab` drives a running Kaggle notebook session instead of Colab. The URL comes from the Kaggle editor's Run → Kaggle Jupyter Server (any of the URLs shown works). It embeds an access token; never print or share it.
+
+- Supported: `exec` (foreground only), `fs upload/download` (≤ 20 MiB), `port-forward create` (foreground), `runtime list/resources/restart`. Every other command, `--endpoint`, and `exec --background` exits with an error.
+- Skip the Colab preconditions (`auth status`, `runtime create`); run `exec` directly.
+- For larger files, publish them locally with `kaggle datasets create/version`, then mount them in the session with `colab exec "import kagglehub; print(kagglehub.dataset_download('<owner>/<slug>'))"`.
+- The CLI creates `content` and `tmp` symlinks under `/kaggle/working`; they appear in the notebook's output.
+- If the CLI reports the session is unreachable, ask the user to restart the session in the Kaggle editor and provide a fresh URL.
+- Unset `COLAB_KAGGLE_URL` to return to Colab.
 
 ## Troubleshooting
 

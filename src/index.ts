@@ -615,8 +615,11 @@ if (DRIVEFS_CLIENT_ID) {
 process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
 
-// Run
-program.parseAsync().catch((err) => {
+// Run. COLAB_KAGGLE_URL switches the whole CLI to Kaggle mode (src/kaggle/).
+if (process.env.COLAB_KAGGLE_URL) {
+  const { runKaggleCli } = await import('./kaggle/cli.js');
+  await runKaggleCli();
+} else program.parseAsync().catch((err) => {
   if (isJsonMode() && err instanceof AuthConsentError) {
     jsonResult({ error: 'consent_required', authType: err.authType, url: err.url });
   } else if (isJsonMode()) {

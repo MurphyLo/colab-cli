@@ -12,6 +12,7 @@ This tool supports:
 - **`colab fs`** — Upload and download files between your local filesystem and the runtime
 - **`colab drive`** — Manage Google Drive files and folders directly from the terminal
 - **`colab drive-mount`** — Mount Google Drive on a runtime without browser prompts (one-time setup)
+- **Kaggle mode** — Control a running Kaggle notebook session via its Kaggle Jupyter Server URL (subset of commands)
 
 ## Requirements
 
@@ -279,6 +280,22 @@ colab drive-mount logout
 > Credentials: `~/.config/colab-cli/drive-mount-auth.json`
 
 Drive is mounted at `/content/drive`. Subsequent `drive.mount('/content/drive')` calls in Python detect the existing mount and return immediately.
+
+### Kaggle Mode (Experimental)
+
+Point the CLI at a running Kaggle notebook session instead of Colab:
+
+```bash
+export COLAB_KAGGLE_URL='<URL from Run → Kaggle Jupyter Server>'
+colab runtime resources
+colab exec "import torch; print(torch.cuda.is_available())"
+unset COLAB_KAGGLE_URL   # back to Colab
+```
+
+- Any of the URLs shown there works (VSCode URL, Colab URL, or the full Open-in-Colab link). The URL embeds an access token — treat it like a password. When the session stops, copy a fresh URL.
+- Supported: `exec` (foreground only), `fs upload/download` (≤ 20 MiB), `port-forward create` (foreground), `runtime list/resources/restart`. Every other command, `--endpoint`, and `exec --background` exits with an error.
+- Larger files: publish them with `kaggle datasets create/version`, then mount them inside the session with `colab exec "import kagglehub; print(kagglehub.dataset_download('<owner>/<slug>'))"`.
+- The CLI creates `content` and `tmp` symlinks under `/kaggle/working`; they show up in the notebook's output.
 
 ### JSON Output (Scripting)
 

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getContentsMetadata,
+  isFileModel,
   putFileBase64,
 } from '../jupyter/contents-client.js';
 import { log } from '../logging/index.js';
@@ -59,7 +60,7 @@ async function verifyUploadedFile(
   expectedSize: number,
 ): Promise<void> {
   const metadata = await transferRetry(() => getContentsMetadata(conn.getProxyUrl(), conn.getToken(), remotePath));
-  if (!metadata || metadata.type !== 'file') {
+  if (!isFileModel(metadata)) {
     throw new Error(`Uploaded path is not a file: ${remotePath}`);
   }
   if (Number(metadata.size) !== expectedSize) {

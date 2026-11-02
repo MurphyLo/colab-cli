@@ -1,6 +1,7 @@
 import path from 'path';
 import {
   getContentsMetadata,
+  isFileModel,
   getFileBase64Content,
 } from '../jupyter/contents-client.js';
 import { log } from '../logging/index.js';
@@ -177,7 +178,7 @@ export async function downloadFile(
 
   // Get file metadata
   const metadata = await transferRetry(() => getContentsMetadata(conn.getProxyUrl(), conn.getToken(), remotePath), options.retries);
-  if (!metadata || metadata.type !== 'file') {
+  if (!isFileModel(metadata)) {
     throw new Error(`Remote path is not a file: ${remotePath}`);
   }
   const fileSize = Number(metadata.size);

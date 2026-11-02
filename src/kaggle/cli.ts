@@ -21,7 +21,7 @@ import { renderOutput } from '../output/terminal-renderer.js';
 import { createForwarder } from '../port-forward/forwarder.js';
 import type { PortTokenRefresher } from '../port-forward/token-refresher.js';
 import { getTlsCredentials } from '../port-forward/tls.js';
-import { getContentsMetadata } from '../jupyter/contents-client.js';
+import { getContentsMetadata, isFileModel } from '../jupyter/contents-client.js';
 import { DIRECT_LIMIT_BYTES, formatBytes, normalizeRemotePath } from '../transfer/common.js';
 import { downloadFile, type DownloadProgressEvent } from '../transfer/download.js';
 import { uploadFile, type UploadProgressEvent } from '../transfer/upload.js';
@@ -360,7 +360,7 @@ async function downloadAction(remotePath: string, opts: { output?: string }): Pr
     if (err?.status === 404) throw new Error(`Remote file not found: /${contentsPath}`);
     throw err;
   });
-  if (metadata?.type !== 'file') throw new Error(`Remote path is not a file: /${contentsPath}`);
+  if (!isFileModel(metadata)) throw new Error(`Remote path is not a file: /${contentsPath}`);
   const size = Number(metadata.size);
   if (size > DIRECT_LIMIT_BYTES) {
     throw tooLarge(`/${contentsPath}`, size,

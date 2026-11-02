@@ -67,6 +67,17 @@ export async function contentsRequest(
   }
 }
 
+/**
+ * True for any on-disk file. The Contents API types an entry as `file`,
+ * `notebook` or `directory`; a notebook is still a file whose metadata
+ * carries its on-disk size. Which files count as notebooks depends on the
+ * server: `.ipynb` by default, and text files such as `.py` or `.sh` when
+ * jupytext is installed.
+ */
+export function isFileModel(metadata: any): boolean {
+  return metadata?.type === 'file' || metadata?.type === 'notebook';
+}
+
 export async function getContentsMetadata(
   proxyUrl: string,
   token: string,

@@ -415,7 +415,7 @@ export async function resourcesCommand(
   }
 }
 
-function printResources(r: Resources): void {
+export function printResources(r: Resources): void {
   console.log(chalk.bold('\nRuntime Resources:'));
 
   const ramUsed = r.memory.totalBytes - r.memory.freeBytes;
@@ -432,7 +432,9 @@ function printResources(r: Resources): void {
       const name = gpu.name ?? 'GPU';
       const memUsage = `${formatBytes(gpu.memoryUsedBytes)} / ${formatBytes(gpu.memoryTotalBytes)}`;
       const util = gpu.gpuUtilization != null ? ` | util ${(gpu.gpuUtilization * 100).toFixed(0)}%` : '';
-      console.log(`  ${chalk.cyan(name)}: ${memUsage}${util}`);
+      // nvidia-smi utilization.memory: share of time device memory was being read or written.
+      const memUtil = gpu.memoryUtilization != null ? ` | mem-bw ${(gpu.memoryUtilization * 100).toFixed(0)}%` : '';
+      console.log(`  ${chalk.cyan(name)}: ${memUsage} (${pct(gpu.memoryUsedBytes, gpu.memoryTotalBytes)})${util}${memUtil}`);
     }
   }
 

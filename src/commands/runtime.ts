@@ -9,6 +9,7 @@ import {
 } from '../colab/api.js';
 import type { Resources } from '../colab/api.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
+import { updateServerNote } from '../runtime/storage.js';
 import { ColabClient } from '../colab/client.js';
 import { DaemonClient } from '../daemon/client.js';
 import { createSpinner, isJsonMode, jsonResult } from '../output/json-output.js';
@@ -21,10 +22,13 @@ export async function createRuntimeCommand(
     shape?: string;
     runtimeVersion?: string;
     kernel?: string;
+    note?: string;
   },
 ): Promise<void> {
   const selection = parseAcceleratorSelection(options.accelerator);
   const variant = selection.variant;
+  // Validate before assigning: a rejected note must not cost a runtime.
+  const note = options.note === undefined ? undefined : normalizeRuntimeNote(options.note);
 
   const shape = options.shape === 'high-ram' ? Shape.HIGHMEM
     : options.shape === 'standard' ? Shape.STANDARD
@@ -42,18 +46,40 @@ export async function createRuntimeCommand(
       shape,
       version: versionLabel,
       kernelName,
+      note,
     });
     if (isJsonMode()) {
-      jsonResult({ command: 'runtime.create', label: server.label, endpoint: server.endpoint, kernelName });
+      jsonResult({ command: 'runtime.create', label: server.label, endpoint: server.endpoint, kernelName, note });
     } else {
       spinner.succeed(
-        `Runtime created: ${server.label} (endpoint: ${server.endpoint})${kernelName !== 'python3' ? ` [${kernelDisplayName(kernelName)}]` : ''}`,
+        `Runtime created: ${server.label} (endpoint: ${server.endpoint})${kernelName !== 'python3' ? ` [${kernelDisplayName(kernelName)}]` : ''}${note ? ` - note: ${note}` : ''}`,
       );
     }
   } catch (err) {
     spinner.fail('Failed to create runtime');
     throw err;
   }
+}
+
+const MAX_RUNTIME_NOTE_LENGTH = 200;
+
+/**
+ * `runtime list` prints one line per runtime, so a note is collapsed to a
+ * single line and stripped of control characters (which also keeps terminal
+ * escape sequences out of the listing).
+ */
+export function normalizeRuntimeNote(raw: string): string {
+  const note = raw
+    .replace(/\s+/g, ' ')
+    .replace(/\p{Cc}/gu, '')
+    .trim();
+  if (!note) {
+    throw new Error('Note must not be empty.');
+  }
+  if ([...note].length > MAX_RUNTIME_NOTE_LENGTH) {
+    throw new Error(`Note must be at most ${MAX_RUNTIME_NOTE_LENGTH} characters.`);
+  }
+  return note;
 }
 
 function kernelDisplayName(kernelName: string): string {
@@ -123,6 +149,7 @@ export async function listRuntimesCommand(
           shape: shapeToMachineShape(isHighMemOnlyAccelerator(a.accelerator) ? Shape.HIGHMEM : a.machineShape),
           endpoint: a.endpoint,
           createdAt: createdAts[i]?.toISOString(),
+          note: runtimeManager.getServerByEndpoint(a.endpoint)?.note,
         })),
       });
       return;
@@ -147,14 +174,34 @@ export async function listRuntimesCommand(
       const created = createdAt
         ? ` - ${chalk.dim(`created ${formatLocalTime(createdAt)}`)}`
         : '';
+      const note = runtimeManager.getServerByEndpoint(a.endpoint)?.note;
       console.log(
-        `  ${chalk.green('●')} ${type}${accel} (${shape}) - ${chalk.dim(a.endpoint)}${created}`,
+        `  ${chalk.green('●')} ${type}${accel} (${shape}) - ${chalk.dim(a.endpoint)}${created}${note ? ` - note: ${note}` : ''}`,
       );
     }
     console.log('');
   } catch (err) {
     spinner.fail('Failed to list runtimes');
     throw err;
+  }
+}
+
+/** Sets a runtime's note; an empty string clears it. */
+export async function noteRuntimeCommand(
+  runtimeManager: RuntimeManager,
+  text: string,
+  endpoint?: string,
+): Promise<void> {
+  const note = text === '' ? undefined : normalizeRuntimeNote(text);
+  const server = await runtimeManager.resolveTarget(endpoint);
+  updateServerNote(server.id, note);
+
+  if (isJsonMode()) {
+    jsonResult({ command: 'runtime.note', endpoint: server.endpoint, note });
+  } else if (note) {
+    console.log(`Note set on ${server.endpoint}: ${note}`);
+  } else {
+    console.log(`Note cleared on ${server.endpoint}`);
   }
 }
 

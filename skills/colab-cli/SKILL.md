@@ -33,7 +33,7 @@ Treat `colab --help` and `colab <subcommand> --help` as the source of truth for 
 4. Execute the requested operation. Note that restarting a runtime may be necessary during execution (e.g., after updating dependencies, when a command hangs, or to clear variables).
 5. Destroy a runtime only when the user asks for it.
 
-When a command could act on multiple runtimes, prefer identifying the target explicitly with `colab runtime list` before using `--endpoint`.
+When a command could act on multiple runtimes, prefer identifying the target explicitly with `colab runtime list` before using `--endpoint`: without `--endpoint`, commands target the most recently created runtime, which may belong to another project. Use each runtime's note to find the one for the current task, and leave runtimes noted for other work alone.
 
 ## Exploratory / Unverified Workflows
 
@@ -58,7 +58,7 @@ Most commands accept a global `--json` flag (`exec` and `shell` excluded). When 
 FOLDER_ID=$(colab drive mkdir models --parent "$PARENT" --json | jq -r '.folderId')
 
 # Extract a runtime endpoint
-ENDPOINT=$(colab runtime create --accelerator T4 --shape standard --json | jq -r '.endpoint')
+ENDPOINT=$(colab runtime create --accelerator T4 --shape standard --note "repo foo training" --json | jq -r '.endpoint')
 ```
 
 Every JSON object includes a `command` field (e.g. `"drive.mkdir"`, `"runtime.create"`). Command-level failures return `{"error":"..."}` with a non-zero exit code.
@@ -92,13 +92,15 @@ colab runtime create --accelerator T4 --shape standard
 colab runtime create --accelerator T4 --runtime-version 2025.10
 colab runtime create --accelerator L4 --shape high-ram
 colab runtime create --accelerator T4 --kernel r
+colab runtime create --accelerator T4 --note "colqwen3 embedding for repo foo"
 colab runtime list
+colab runtime note "colqwen3 embedding, second pass" --endpoint <endpoint>
 colab runtime resources --endpoint <endpoint>
 colab runtime restart --endpoint <endpoint>
 colab runtime destroy --endpoint <endpoint>
 ```
 
-Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `--kernel` to select a non-default kernel (`r` for R, `julia` for Julia). Use `resources` to check RAM, disk and GPU usage of a running runtime. Use `list` whenever endpoint selection matters. When the task has explicit version pins (e.g. `requirements.txt` or `pyproject.toml`) and the native Python environment causes dependency conflicts, prefer installing `uv` on the runtime and running code under a `uv`-managed environment — this gives finer control than `--runtime-version` and does not require finding a matching image.
+Use `available` before creation when the user wants to know what their account can launch. Use `versions` to list available runtime versions and their environment details (Python, PyTorch, etc.). Use `--runtime-version` with `create` to pin a specific version. Use `--kernel` to select a non-default kernel (`r` for R, `julia` for Julia). Use `resources` to check RAM, disk and GPU usage of a running runtime. Use `list` whenever endpoint selection matters. Always pass `--note` to `create`, naming the project and purpose, so that later sessions can tell runtimes apart; `list` shows it (`note` with `--json`, on `create` too). When a runtime's purpose changes or it has no note, set one with `colab runtime note "<text>" --endpoint <endpoint>` (`""` clears it). Always pass `--endpoint` to `note`, or it will overwrite the note of the most recently created runtime. Notes are local to the machine that created the runtime, so a runtime created elsewhere shows none and cannot be given one. When the task has explicit version pins (e.g. `requirements.txt` or `pyproject.toml`) and the native Python environment causes dependency conflicts, prefer installing `uv` on the runtime and running code under a `uv`-managed environment — this gives finer control than `--runtime-version` and does not require finding a matching image.
 
 ### Usage
 

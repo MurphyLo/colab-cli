@@ -84,10 +84,14 @@ colab runtime create --accelerator T4 --shape standard
 colab runtime create --accelerator v6e-1 --shape high-ram
 colab runtime create --accelerator T4 --runtime-version 2025.10   # pin to specific version
 colab runtime create --accelerator T4 --kernel r                  # R kernel
+colab runtime create --accelerator T4 --note "colqwen3 embedding"  # say what it is for
 ```
+
+`--note` is shown by `colab runtime list` (and as `note` in `--json`). It is kept in the local runtime state, so a runtime created on another machine has none and cannot be given one.
 
 ```bash
 colab runtime list                       # list active runtimes
+colab runtime note "new purpose" -e <ep> # set the note ("" clears it)
 colab runtime resources                  # show RAM, disk and GPU usage
 colab runtime destroy --endpoint <ep>    # destroy a runtime
 colab runtime restart --endpoint <ep>    # restart kernel without destroying the VM

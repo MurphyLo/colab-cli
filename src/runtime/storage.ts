@@ -21,6 +21,7 @@ const StoredServerSchema = z.object({
   tokenExpiry: z.coerce.date(),
   dateAssigned: z.coerce.date(),
   kernelName: z.string().optional().default('python3'),
+  note: z.string().optional(),
 });
 
 export type StoredServer = z.infer<typeof StoredServerSchema>;
@@ -57,6 +58,15 @@ export function removeStoredServer(id: UUID): boolean {
   ensureConfigDir();
   fs.writeFileSync(SERVERS_FILE, JSON.stringify(filtered, null, 2), { mode: 0o600 });
   return true;
+}
+
+export function updateServerNote(id: UUID, note: string | undefined): void {
+  const servers = listStoredServers();
+  const server = servers.find((s) => s.id === id);
+  if (!server) throw new Error(`No local record for runtime ${id}.`);
+  server.note = note;
+  ensureConfigDir();
+  fs.writeFileSync(SERVERS_FILE, JSON.stringify(servers, null, 2), { mode: 0o600 });
 }
 
 export function updateServerToken(

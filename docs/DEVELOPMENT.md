@@ -1377,8 +1377,9 @@ auth status
 auth logout
 runtime available
 runtime versions
-runtime create --accelerator <name> [--shape <shape>] [-v <version>]
+runtime create --accelerator <name> [--shape <shape>] [-v <version>] [-n <note>]
 runtime list
+runtime note <text> [--endpoint <endpoint>]
 runtime destroy [--endpoint <endpoint>]
 runtime restart [--endpoint <endpoint>]
 exec [code | stdin] [-f <file>] [-e <endpoint>] [-o <output-dir>]

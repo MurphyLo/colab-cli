@@ -21,6 +21,7 @@ import {
   listAvailableRuntimesCommand,
   listRuntimesCommand,
   listRuntimeVersionsCommand,
+  noteRuntimeCommand,
   destroyRuntimeCommand,
   restartRuntimeCommand,
   resourcesCommand,
@@ -196,6 +197,10 @@ runtime
       .choices(['python3', 'r', 'julia'])
       .default('python3'),
   )
+  .option(
+    '-n, --note <text>',
+    'what this runtime is for, shown by `colab runtime list` (max 200 characters)',
+  )
   .action(async (opts) => {
     await ensureLoggedIn();
     await createRuntimeCommand(runtimeManager, opts);
@@ -223,6 +228,15 @@ runtime
   .action(async () => {
     await ensureLoggedIn();
     await listRuntimesCommand(runtimeManager);
+  });
+
+runtime
+  .command('note <text>')
+  .description('set the note shown by `colab runtime list` (an empty string clears it)')
+  .option('-e, --endpoint <endpoint>', 'runtime endpoint')
+  .action(async (text, opts) => {
+    await ensureLoggedIn();
+    await noteRuntimeCommand(runtimeManager, text, opts.endpoint);
   });
 
 runtime

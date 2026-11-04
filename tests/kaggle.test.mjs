@@ -55,7 +55,7 @@ test('everything else is rejected', () => {
   for (const [args, name] of [
     [['shell'], '`shell`'], [['auth', 'login'], '`auth`'], [['drive', 'list'], '`drive`'], [['usage'], '`usage`'],
     [['drive-mount'], '`drive-mount`'], [['runtime', 'create', '-a', 'T4'], '`runtime create`'],
-    [['runtime', 'versions'], '`runtime versions`'], [['runtime', 'destroy'], '`runtime destroy`'], [['exec', 'attach', '1'], '`exec attach`'],
+    [['runtime', 'versions'], '`runtime versions`'], [['runtime', 'destroy'], '`runtime destroy`'], [['runtime', 'note', 'x'], '`runtime note`'], [['exec', 'attach', '1'], '`exec attach`'],
     [['exec', 'list'], '`exec list`'], [['exec', '-b', 'x'], '`exec --background`'],
     [['pf', 'list'], '`pf list`'], [['port-forward', 'close', '--all'], '`port-forward close`'],
     [['some-future-command'], '`some-future-command`'],

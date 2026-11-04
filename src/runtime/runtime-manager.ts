@@ -64,6 +64,7 @@ export class RuntimeManager {
     shape?: Shape;
     version?: string;
     kernelName?: string;
+    note?: string;
   }): Promise<StoredServer> {
     const id = randomUUID();
     const accelerator = await this.resolveAccelerator(
@@ -96,6 +97,7 @@ export class RuntimeManager {
       tokenExpiry,
       dateAssigned: new Date(),
       kernelName: options.kernelName ?? 'python3',
+      note: options.note,
     };
 
     storeServer(server);

@@ -11,6 +11,7 @@ import {
 } from '../colab/headers.js';
 import { log } from '../logging/index.js';
 import { ProxiedJupyterClient } from './client/index.js';
+import { ResponseError } from './client/generated/runtime.js';
 import { getProxyAgent } from '../utils/proxy.js';
 
 // Kernel output types
@@ -100,6 +101,20 @@ const ColabAuthRequestSchema = z.object({
   }),
 });
 
+/** How long one ensureReady()/restart keeps retrying before reporting failure. */
+const ESTABLISH_BUDGET_MS = 180_000;
+
+function connectFailureStatus(err: unknown): number | undefined {
+  if (err instanceof ResponseError) return err.response.status;
+  const match = /Unexpected server response: (\d+)/.exec(err instanceof Error ? err.message : '');
+  return match ? Number(match[1]) : undefined;
+}
+
+/** Client errors such as an expired token won't heal within the retry budget. */
+function isRetryableConnectFailure(status: number | undefined): boolean {
+  return status === undefined || status >= 500 || status === 408 || status === 429;
+}
+
 export class KernelConnection {
   private ws?: WebSocket;
   private kernelId?: string;
@@ -112,6 +127,11 @@ export class KernelConnection {
   private _reconnecting = false;
   private reconnectGeneration = 0;
   private rejectHandshake?: (error: Error) => void;
+  private cancelReadyWait?: (error: Error) => void;
+  private cancelRetryDelay?: () => void;
+  /** False until the kernel has answered on the current connection, and again once a restart begins. */
+  private ready = false;
+  private establishing?: Promise<void>;
   private _reconnectTimer?: ReturnType<typeof setTimeout>;
   private pendingAuthReplies = new Map<number, string | undefined>();
   private stopHeartbeat?: () => void;
@@ -151,6 +171,97 @@ export class KernelConnection {
   }
 
   async connect(): Promise<void> {
+    await this.createSession();
+    await this.openReadyChannel();
+    try { await this.installJournal(); }
+    catch (error) { log.error("Journal installation deferred; next execution will retry:", String(error)); }
+    this.ready = true;
+  }
+
+  /**
+   * Resolve once the kernel is usable, establishing the connection if it never
+   * came up or a restart left it down. Concurrent callers share one attempt, and
+   * a failure is not remembered: the next caller tries again.
+   */
+  ensureReady(): Promise<void> {
+    if (this.ready) return Promise.resolve();
+    return this.establishing ?? this.trackEstablishing(this.establish());
+  }
+
+  private trackEstablishing(attempt: Promise<void>): Promise<void> {
+    const tracked: Promise<void> = attempt.finally(() => {
+      if (this.establishing === tracked) this.establishing = undefined;
+    });
+    this.establishing = tracked;
+    return tracked;
+  }
+
+  private async establish(): Promise<void> {
+    const generation = this.reconnectGeneration;
+    await this.retryConnecting(generation);
+    try { await this.installJournal(); }
+    catch (error) { log.error("Journal installation deferred; next execution will retry:", String(error)); }
+    this.markReady(generation);
+  }
+
+  /** Auto-reconnect is off until ready, so a socket lost during setup must fail the attempt. */
+  private markReady(generation: number): void {
+    this.throwIfSuperseded(generation);
+    if (!this.isConnected) throw new Error('Kernel WebSocket closed during connection setup');
+    this.ready = true;
+  }
+
+  private throwIfSuperseded(generation: number): void {
+    if (this._closed || generation !== this.reconnectGeneration) {
+      throw new Error('Connection attempt cancelled');
+    }
+  }
+
+  /** Open a ready channel with backoff, leaving no half-open socket behind on failure. */
+  private async retryConnecting(generation: number): Promise<void> {
+    const deadline = Date.now() + ESTABLISH_BUDGET_MS;
+    for (let tries = 1; ; tries++) {
+      try {
+        if (!this.kernelId) await this.createSession();
+        this.throwIfSuperseded(generation);
+        await this.openReadyChannel();
+        this.throwIfSuperseded(generation);
+        return;
+      } catch (err) {
+        this.throwIfSuperseded(generation);
+        this.discardConnection();
+        const status = connectFailureStatus(err);
+        // The kernel is gone, so a retry has to ask for a new one.
+        const kernelGone = status === 404 && !(err instanceof ResponseError) && this.kernelId !== undefined;
+        if (kernelGone) this.kernelId = undefined;
+        const delay = reconnectDelay(tries);
+        if ((!kernelGone && !isRetryableConnectFailure(status)) || Date.now() + delay >= deadline) throw err;
+        log.debug(`Kernel connection attempt ${tries} failed, retrying: ${err}`);
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, delay);
+          this.cancelRetryDelay = () => { clearTimeout(timer); resolve(); };
+        });
+        this.cancelRetryDelay = undefined;
+        this.throwIfSuperseded(generation);
+      }
+    }
+  }
+
+  private async openReadyChannel(): Promise<void> {
+    this.discardConnection();
+    await this.connectWebSocket();
+    await this.waitForKernelReady();
+  }
+
+  private discardConnection(): void {
+    this.stopHeartbeat?.();
+    if (this.ws) {
+      discardWebSocket(this.ws);
+      this.ws = undefined;
+    }
+  }
+
+  private async createSession(): Promise<void> {
     // Create a session which gives us a kernel
     // Map user-facing kernel names to Jupyter kernelspec names
     const kernelSpecName = this.kernelName === 'r' ? 'ir' : this.kernelName;
@@ -171,10 +282,6 @@ export class KernelConnection {
     }
 
     log.debug('Created kernel session:', this.kernelId);
-    await this.connectWebSocket();
-    await this.waitForKernelReady();
-    try { await this.installJournal(); }
-    catch (error) { log.error("Journal installation deferred; next execution will retry:", String(error)); }
   }
 
   private async installJournal(): Promise<void> {
@@ -237,6 +344,7 @@ export class KernelConnection {
     this.clientSessionId = state.clientSessionId;
     this.journalReady = !!state.journal;
     this.journalRequired = this.kernelName === 'python3';
+    this.ready = true;
     return this.executeAndStream(structuredClone(state), undefined, checkpoint);
   }
 
@@ -263,30 +371,39 @@ export class KernelConnection {
       );
     }
 
+    return this.trackEstablishing(this.restartAndReconnect(this.kernelId));
+  }
+
+  private async restartAndReconnect(kernelId: string): Promise<void> {
     this.cancelReconnect();
-    this.stopHeartbeat?.();
+    const generation = this.reconnectGeneration;
     this.pendingAuthReplies.clear();
     this.activeExecutionAbort?.(new Error('Kernel explicitly restarted during execution'));
     this._restarting = true;
+    this.ready = false;
+    this.journalReady = false;
     try {
       log.debug('Restarting kernel...');
+      this.discardConnection();
 
-      // Close existing websocket
-      if (this.ws) {
-        discardWebSocket(this.ws);
-        this.ws = undefined;
+      // Restart once via REST API: repeating it could kill a kernel that is still starting.
+      await this.jupyterClient.kernels.restart({ kernelId });
+
+      try {
+        await this.retryConnecting(generation);
+        await this.installJournal();
+        this.markReady(generation);
+      } catch (err) {
+        this.throwIfSuperseded(generation);
+        this.discardConnection();
+        throw new Error(
+          `Kernel was restarted, but the connection could not be restored: ` +
+          `${err instanceof Error ? err.message : String(err)}. The next exec will try to reconnect.`,
+        );
       }
-
-      // Restart via REST API
-      await this.jupyterClient.kernels.restart({ kernelId: this.kernelId });
-
-      // Reconnect WebSocket
-      await this.connectWebSocket();
-      await this.waitForKernelReady();
-      await this.installJournal();
       log.debug('Kernel restarted and reconnected');
     } finally {
-      this._restarting = false;
+      if (generation === this.reconnectGeneration) this._restarting = false;
     }
   }
 
@@ -358,6 +475,8 @@ export class KernelConnection {
     this.reconnectGeneration++;
     this.rejectHandshake?.(new Error('Connection attempt cancelled'));
     this.rejectHandshake = undefined;
+    this.cancelReadyWait?.(new Error('Connection attempt cancelled'));
+    this.cancelRetryDelay?.();
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = undefined;
@@ -367,7 +486,8 @@ export class KernelConnection {
 
   /** Reconnect the same kernel and client session until explicitly closed. */
   private scheduleReconnect(): void {
-    if (this._closed || this._restarting || this._reconnecting) return;
+    // A connection still being established has its own retries.
+    if (this._closed || this._restarting || this._reconnecting || this.establishing) return;
     this._reconnecting = true;
     this.activeConnectionStatus?.('reconnecting');
     const generation = this.reconnectGeneration;
@@ -439,6 +559,7 @@ export class KernelConnection {
         if (this.ws !== ws) return;
         this.stopHeartbeat?.();
         this.ws = undefined;
+        this.cancelReadyWait?.(new Error('Kernel WebSocket closed before the kernel became ready'));
         if (opened) this.scheduleReconnect();
       });
     });
@@ -572,10 +693,19 @@ export class KernelConnection {
       }
 
       const msgId = uuid();
-      const timeout = setTimeout(() => {
+      const settle = () => {
+        clearTimeout(timeout);
         this.messageHandlers.delete(msgId);
+        this.cancelReadyWait = undefined;
+      };
+      const timeout = setTimeout(() => {
+        settle();
         reject(new Error('Kernel did not become ready in time'));
       }, 60_000);
+      this.cancelReadyWait = (error) => {
+        settle();
+        reject(error);
+      };
 
       this.messageHandlers.set(msgId, (msg) => {
         const msgType = msg.header?.msg_type;
@@ -583,16 +713,14 @@ export class KernelConnection {
 
         // A shell reply confirms the kernel is responsive.
         if (channel === 'shell' && msgType === 'kernel_info_reply') {
-          clearTimeout(timeout);
-          this.messageHandlers.delete(msgId);
+          settle();
           resolve();
           return;
         }
 
         // Some kernels also emit a matching iopub idle transition.
         if (channel === 'iopub' && msgType === 'status' && msg.content?.execution_state === 'idle') {
-          clearTimeout(timeout);
-          this.messageHandlers.delete(msgId);
+          settle();
           resolve();
         }
       });

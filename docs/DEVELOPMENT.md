@@ -589,13 +589,16 @@ CLI: runtime restart
   KernelConnection.restartKernel()
     0. 设置 _restarting = true（抑制健康检查误判）
     1. 关闭现有 WebSocket（此时 isConnected 为 false）
-    2. POST /api/kernels/<kernel_id>/restart（REST API，使用 getProxyUrl() 获取最新 URL）
-    3. 重新建立 WebSocket 到同一 kernel_id
-    4. 等待 status: idle
-    5. 恢复 _restarting = false（finally 块中执行，即使失败也会恢复）
+    2. POST /api/kernels/<kernel_id>/restart（REST API，使用 getProxyUrl() 获取最新 URL），只发一次
+    3. 重新建立 WebSocket 到同一 kernel_id，并等待 kernel_info 回复；失败则丢弃连接、退避重试，最长 3 分钟
+    4. 恢复 _restarting = false（finally 块中执行，即使失败也会恢复）
 ```
 
 重启只杀 Python 进程，不销毁 VM。用于 `%pip install` 后重载模块。
+
+REST 已成功但连接没恢复时，报错为 `Kernel was restarted, but the connection could not be restored`，下一次 `exec` 会重新连接，不会再次重启。
+
+`KernelConnection.ensureReady()` 负责建立连接：`exec` 每次都先调用它，并发调用共用一次尝试，失败不会被记住。连接未就绪时必须丢弃 socket，不能留给后续复用：kernel 未响应时 Jupyter 会在约 60s 后放弃这条 channel，但客户端收不到 close，还能继续收到 pong（推断是 Colab 代理代回的），所以心跳检测不出来，发到这条连接的代码也永远等不到回复。
 
 ### 4.7 Kernel 崩溃检测
 

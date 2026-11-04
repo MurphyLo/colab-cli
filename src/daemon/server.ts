@@ -406,26 +406,24 @@ async function main() {
     requestEphemeralAuth,
   );
 
-  // Begin kernel connection (may be slow on cold-start GPU runtimes). The
-  // promise is stored so exec handlers can await it instead of failing early.
-  // Kernel failure does NOT take down the daemon — shell, port-forward, and
-  // future kernel restarts must remain available even when the initial
-  // Jupyter WebSocket times out. The .catch below observes the rejection so
-  // Node doesn't log unhandledRejection; later `await kernelReady` calls in
-  // exec handlers still see the rejected state and fail the exec cleanly.
+  // Begin kernel connection (may be slow on cold-start GPU runtimes). Kernel
+  // failure does NOT take down the daemon — shell, port-forward, and kernel
+  // restarts must remain available even when the Jupyter WebSocket times out.
+  // Each exec awaits kernel.ensureReady(), which retries after a failed attempt.
   console.log('Connecting to kernel...');
-  const kernelReady = Promise.resolve().then(async () => {
-    if (!recovering) await kernel.connect();
-    console.log(recovering ? 'Restoring kernel execution' : 'Kernel connected');
-  });
-  kernelReady.catch((err) => {
-    console.error('Kernel connection failed:', err instanceof Error ? err.message : err);
-  });
+  if (recovering) {
+    console.log('Restoring kernel execution');
+  } else {
+    kernel.ensureReady().then(
+      () => console.log('Kernel connected'),
+      (err) => console.error('Kernel connection failed:', err instanceof Error ? err.message : err),
+    );
+  }
 
   /** Run execution and route outputs to store + attached socket. */
   async function runExecution(execId: number, code: string, recovery?: ExecutionRecovery): Promise<void> {
     try {
-      await kernelReady;
+      if (!recovery) await kernel.ensureReady();
       if (!recovery && !kernel.isConnected) {
         const message = kernel.isReconnecting
           ? 'Kernel WebSocket is reconnecting, retry in a few seconds.'
@@ -506,7 +504,6 @@ async function main() {
     handleClient(
       socket,
       kernel,
-      kernelReady,
       execState,
       store,
       runExecution,
@@ -526,14 +523,13 @@ async function main() {
   refresher.start();
 
   // The daemon stays alive as long as the socket server runs. Kernel failure
-  // is handled per-exec via `await kernelReady` in runExecution; shell and
+  // is handled per-exec via `kernel.ensureReady()` in runExecution; shell and
   // port-forward sessions are independent of kernel state.
 }
 
 function handleClient(
   socket: net.Socket,
   kernel: KernelConnection,
-  kernelReady: Promise<void>,
   execState: {
     activeExecution?: ActiveExecution;
   },

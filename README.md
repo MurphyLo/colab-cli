@@ -41,6 +41,8 @@ colab auth logout   # sign out
 colab auth list     # list account profiles (local only)
 ```
 
+Login commands (`auth login`, `drive login`, `drive-mount login`) wait 300 seconds for the browser sign-in. Set `COLAB_AUTH_TIMEOUT_SECONDS` to change this, e.g. `COLAB_AUTH_TIMEOUT_SECONDS=600 colab auth login`.
+
 > Credentials: `~/.config/colab-cli/auth.json`
 
 #### Multiple Accounts
@@ -333,7 +335,7 @@ colab drive mkdir models -p "$PARENT_ID" --json
 # => {"command":"drive.mkdir","name":"models","folderId":"1Abc...","parentId":"1Xyz..."}
 
 colab auth login --json
-# => {"event":"auth_required","authType":"colab","url":"https://accounts.google.com/...","timeoutSeconds":120}
+# => {"event":"auth_required","authType":"colab","url":"https://accounts.google.com/...","timeoutSeconds":300}
 ```
 
 Scripting example — building a nested Drive folder tree:

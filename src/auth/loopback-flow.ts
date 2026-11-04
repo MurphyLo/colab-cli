@@ -2,9 +2,8 @@ import assert from 'assert';
 import * as http from 'http';
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 import open from 'open';
+import { getAuthTimeoutMs } from '../config.js';
 import { LoopbackServer, LoopbackHandler } from './loopback-server.js';
-
-export const EXCHANGE_TIMEOUT_MS = 120_000;
 
 interface FlowResult {
   code: string;
@@ -17,6 +16,7 @@ export async function runLoopbackFlow(
   onAuthUrl?: (url: string) => void,
   authUrlOptions: { prompt: string; login_hint?: string } = { prompt: 'consent' },
 ): Promise<FlowResult> {
+  const timeoutMs = getAuthTimeoutMs();
   const pkce = await oAuth2Client.generateCodeVerifierAsync();
   const nonce = crypto.randomUUID();
 
@@ -80,7 +80,7 @@ export async function runLoopbackFlow(
 
     const timeout = setTimeout(() => {
       rejectCode(new Error('Authentication timed out'));
-    }, EXCHANGE_TIMEOUT_MS);
+    }, timeoutMs);
 
     try {
       const code = await codePromise;

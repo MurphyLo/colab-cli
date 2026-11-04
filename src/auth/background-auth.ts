@@ -18,10 +18,10 @@ import {
   CONFIG_DIR,
   DRIVE_AUTH_FILE,
   DRIVE_MOUNT_AUTH_FILE,
+  getAuthTimeoutMs,
 } from '../config.js';
 import { getStoredSession, storeSession } from './storage.js';
 import { LoopbackServer, type LoopbackHandler } from './loopback-server.js';
-import { EXCHANGE_TIMEOUT_MS } from './loopback-flow.js';
 import { jsonResult } from '../output/json-output.js';
 
 export type BackgroundAuthType = 'colab' | 'drive' | 'drive-mount';
@@ -63,6 +63,7 @@ function getAuthConfig(authType: BackgroundAuthType): AuthConfig {
 // ---------------------------------------------------------------------------
 
 export async function startBackgroundAuth(authType: BackgroundAuthType): Promise<void> {
+  const timeoutMs = getAuthTimeoutMs();
   const config = getAuthConfig(authType);
   const oAuth2Client = new OAuth2Client(config.clientId, config.clientSecret);
 
@@ -82,15 +83,13 @@ export async function startBackgroundAuth(authType: BackgroundAuthType): Promise
     code_challenge: pkce.codeChallenge,
   });
 
-  const timeoutSeconds = EXCHANGE_TIMEOUT_MS / 1000;
-
-  spawnDaemon({ port, nonce, codeVerifier: pkce.codeVerifier, authType });
+  spawnDaemon({ port, nonce, codeVerifier: pkce.codeVerifier, authType, timeoutMs });
 
   jsonResult({
     event: 'auth_required',
     authType,
     url: authUrl,
-    timeoutSeconds,
+    timeoutSeconds: timeoutMs / 1000,
   });
 }
 
@@ -101,6 +100,7 @@ function spawnDaemon(params: {
   nonce: string;
   codeVerifier: string;
   authType: BackgroundAuthType;
+  timeoutMs: number;
 }): void {
   const thisModule = fileURLToPath(import.meta.url);
   // Same flag as the CLI shebang: without it native fetch (userinfo) ignores
@@ -142,6 +142,7 @@ async function runAuthCallbackDaemon(opts: {
   nonce: string;
   codeVerifier: string;
   authType: BackgroundAuthType;
+  timeoutMs: number;
 }): Promise<void> {
   const config = getAuthConfig(opts.authType);
   const oAuth2Client = new OAuth2Client(config.clientId, config.clientSecret);
@@ -198,7 +199,7 @@ async function runAuthCallbackDaemon(opts: {
 
     const timeout = setTimeout(() => {
       rejectCode(new Error('Authentication timed out'));
-    }, EXCHANGE_TIMEOUT_MS);
+    }, opts.timeoutMs);
 
     try {
       const code = await codePromise;

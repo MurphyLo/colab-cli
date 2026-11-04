@@ -378,11 +378,11 @@ auth-manager.ts: login()
   → background-auth.ts: startBackgroundAuth(authType)
       1. 生成 PKCE、nonce，找到可用端口，构造 OAuth URL
       2. spawn 自身模块为 detached 守护进程（接管 loopback 回调）
-      3. 向 stdout 输出 {"event":"auth_required","authType":"...","url":"...","timeoutSeconds":120}
+      3. 向 stdout 输出 {"event":"auth_required","authType":"...","url":"...","timeoutSeconds":300}
       4. 父进程退出（代理工具可立即读取 URL）
   → 守护进程 runAuthCallbackDaemon()
       1. 在同一端口启动 loopback server
-      2. 等待 OAuth 回调（≤120s）
+      2. 等待 OAuth 回调（默认 ≤300s，可用 COLAB_AUTH_TIMEOUT_SECONDS 调整，前台流程共用）
       3. 交换 code → tokens，保存凭证到对应文件
       4. 退出
 ```
@@ -1369,7 +1369,7 @@ npm run dev          # watch 模式编译
 
 ### 命令总览
 
-除 `exec` 和 `shell` 外的所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象。登录命令（auth login / drive login / drive-mount login）在 `--json` 模式下非阻塞：输出 `{"event":"auth_required","authType":"...","url":"...","timeoutSeconds":120}` 后立即退出，后台守护进程等待 OAuth 回调；调用方可通过对应的 `status --json` 命令轮询确认登录完成。命令级失败通常输出 `{"error":"..."}` 并以非零状态退出。`exec` 和 `shell` 忽略 `--json`，因为它们依赖交互式终端进行流式输出和 stdin 透传。
+除 `exec` 和 `shell` 外的所有命令支持全局 `--json` 标志，输出结构化 JSON Lines 到 stdout（适用于脚本自动化）。常规情况下最后一行是带 `command` 字段的结果对象。登录命令（auth login / drive login / drive-mount login）在 `--json` 模式下非阻塞：输出 `{"event":"auth_required","authType":"...","url":"...","timeoutSeconds":300}` 后立即退出，后台守护进程等待 OAuth 回调；调用方可通过对应的 `status --json` 命令轮询确认登录完成。命令级失败通常输出 `{"error":"..."}` 并以非零状态退出。`exec` 和 `shell` 忽略 `--json`，因为它们依赖交互式终端进行流式输出和 stdin 透传。
 
 ```text
 auth login

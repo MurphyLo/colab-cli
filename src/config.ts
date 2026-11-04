@@ -97,6 +97,25 @@ export const COLAB_AUTH_URL_OPTIONS = {
   ...(PROFILE_EMAIL ? { login_hint: PROFILE_EMAIL } : {}),
 };
 
+const DEFAULT_AUTH_TIMEOUT_SECONDS = 300;
+// setTimeout overflows above 2^31-1 ms and would fire immediately.
+const MAX_AUTH_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1000);
+
+/**
+ * How long a login waits for the browser callback. Read on demand, not at
+ * import time, so a bad value only fails login commands.
+ */
+export function getAuthTimeoutMs(raw = process.env.COLAB_AUTH_TIMEOUT_SECONDS): number {
+  if (raw === undefined) return DEFAULT_AUTH_TIMEOUT_SECONDS * 1000;
+  const seconds = /^[1-9]\d*$/.test(raw) ? Number(raw) : NaN;
+  if (!(seconds <= MAX_AUTH_TIMEOUT_SECONDS)) {
+    throw new Error(
+      `Invalid COLAB_AUTH_TIMEOUT_SECONDS ${JSON.stringify(raw)}: use a whole number of seconds from 1 to ${MAX_AUTH_TIMEOUT_SECONDS}`,
+    );
+  }
+  return seconds * 1000;
+}
+
 export const AUTH_FILE = path.join(PROFILE_DIR, 'auth.json');
 export const SERVERS_FILE = path.join(PROFILE_DIR, 'servers.json');
 export const DRIVE_AUTH_FILE = path.join(CONFIG_DIR, 'drive-auth.json');

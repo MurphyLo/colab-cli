@@ -15,6 +15,7 @@ export async function runLoopbackFlow(
   oAuth2Client: OAuth2Client,
   scopes: string[],
   onAuthUrl?: (url: string) => void,
+  authUrlOptions: { prompt: string; login_hint?: string } = { prompt: 'consent' },
 ): Promise<FlowResult> {
   const pkce = await oAuth2Client.generateCodeVerifierAsync();
   const nonce = crypto.randomUUID();
@@ -66,7 +67,7 @@ export async function runLoopbackFlow(
     const authUrl = oAuth2Client.generateAuthUrl({
       access_type: 'offline',
       response_type: 'code',
-      prompt: 'consent',
+      ...authUrlOptions,
       code_challenge_method: CodeChallengeMethod.S256,
       redirect_uri: address,
       state: `nonce=${nonce}`,

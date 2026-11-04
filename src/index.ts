@@ -1,14 +1,21 @@
 #!/usr/bin/env -S node --use-env-proxy --disable-warning=UNDICI-EHPA
 
 import { Command, Option } from 'commander';
-import { COLAB_API_DOMAIN, COLAB_GAPI_DOMAIN, OAUTH_CLIENT_ID, DRIVEFS_CLIENT_ID } from './config.js';
+import {
+  COLAB_API_DOMAIN,
+  COLAB_GAPI_DOMAIN,
+  DRIVEFS_CLIENT_ID,
+  LOGIN_COMMAND,
+  OAUTH_CLIENT_ID,
+  PROFILE_LABEL,
+} from './config.js';
 import { AuthManager } from './auth/auth-manager.js';
 import { ColabClient } from './colab/client.js';
 import { RuntimeManager } from './runtime/runtime-manager.js';
 import { log } from './logging/index.js';
 import { setJsonMode, jsonError, jsonResult, isJsonMode } from './output/json-output.js';
 import { AuthConsentError } from './auth/ephemeral.js';
-import { loginCommand, statusCommand, logoutCommand } from './commands/auth.js';
+import { loginCommand, statusCommand, logoutCommand, listProfilesCommand } from './commands/auth.js';
 import {
   createRuntimeCommand,
   listAvailableRuntimesCommand,
@@ -120,10 +127,11 @@ async function ensureInitialized(): Promise<void> {
 async function ensureLoggedIn(): Promise<void> {
   await ensureInitialized();
   if (!authManager.isLoggedIn()) {
+    const message = `Not logged in${PROFILE_LABEL}. Run \`${LOGIN_COMMAND}\` first.`;
     if (isJsonMode()) {
-      jsonError('Not logged in. Run `colab auth login` first.');
+      jsonError(message);
     } else {
-      console.error('Not logged in. Run `colab auth login` first.');
+      console.error(message);
     }
     process.exit(1);
   }
@@ -154,6 +162,13 @@ auth
   .action(async () => {
     await ensureInitialized();
     await logoutCommand(authManager);
+  });
+
+auth
+  .command('list')
+  .description('list account profiles selectable with COLAB_PROFILE')
+  .action(() => {
+    listProfilesCommand();
   });
 
 // Runtime commands

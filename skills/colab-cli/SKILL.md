@@ -75,9 +75,12 @@ When building scripts that chain folder creation or runtime operations, always u
 colab auth login
 colab auth status
 colab auth logout
+colab auth list
 ```
 
 Use `login` for first-time setup or expired Colab credentials. Use `status` as the first diagnostic step when runtime-side auth is in doubt.
+
+To use a specific Colab account, set `COLAB_PROFILE` to its profile name or email on every command, or export it for the session: `COLAB_PROFILE=me@gmail.com colab runtime list`. Profiles are per-process, so accounts can run concurrently; `colab auth list` shows them and marks the active one (`default` is the profile used when the variable is unset). Runtimes are only visible from the profile that created them. `drive` and `drive-mount` credentials are shared across profiles. Never run `auth logout` just to change accounts: it revokes the token.
 
 ### Runtime Discovery And Lifecycle
 

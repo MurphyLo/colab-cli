@@ -5,6 +5,7 @@ import fs from 'fs';
 import { OAuth2Client, CodeChallengeMethod } from 'google-auth-library';
 import { v4 as uuid } from 'uuid';
 import {
+  COLAB_AUTH_URL_OPTIONS,
   OAUTH_CLIENT_ID,
   OAUTH_CLIENT_SECRET,
   REQUIRED_SCOPES,
@@ -73,7 +74,7 @@ export async function startBackgroundAuth(authType: BackgroundAuthType): Promise
   const authUrl = oAuth2Client.generateAuthUrl({
     access_type: 'offline',
     response_type: 'code',
-    prompt: 'consent',
+    ...(authType === 'colab' ? COLAB_AUTH_URL_OPTIONS : { prompt: 'consent' }),
     code_challenge_method: CodeChallengeMethod.S256,
     redirect_uri: redirectUri,
     state: `nonce=${nonce}`,

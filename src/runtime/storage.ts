@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { Variant } from '../colab/api.js';
 
 const VARIANTS = ['DEFAULT', 'GPU', 'TPU'] as const;
-import { CONFIG_DIR, SERVERS_FILE } from '../config.js';
+import { PROFILE_DIR, SERVERS_FILE } from '../config.js';
 import { isUUID } from '../utils/uuid.js';
 
 const StoredServerSchema = z.object({
@@ -26,7 +26,7 @@ const StoredServerSchema = z.object({
 export type StoredServer = z.infer<typeof StoredServerSchema>;
 
 function ensureConfigDir() {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.mkdirSync(PROFILE_DIR, { recursive: true, mode: 0o700 });
 }
 
 export function listStoredServers(): StoredServer[] {

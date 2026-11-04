@@ -370,6 +370,9 @@ auth-manager.ts: login()
       7. 用 code + code_verifier 换取 tokens
   → 用 access_token 请求 googleapis.com/oauth2/v2/userinfo
   → 存储 { id, refreshToken, account, scopes } 到 ~/.config/colab-cli/auth.json
+    （设置 COLAB_PROFILE 时为 profiles/<profile>/auth.json，servers.json 同样按 profile 隔离；
+    daemon 继承该变量。daemon socket 等按 server UUID 命名的文件留在根目录，
+    避免长邮箱目录超出 macOS 104 字节的 socket 路径上限）
 
 `--json` 模式后台流程（auth login / drive login / drive-mount login 共用）：
   → background-auth.ts: startBackgroundAuth(authType)

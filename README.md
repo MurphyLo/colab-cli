@@ -38,9 +38,34 @@ After `npm link`, the `colab` command points to your local build. Run `npm run b
 colab auth login    # sign in via browser OAuth flow
 colab auth status   # check current session
 colab auth logout   # sign out
+colab auth list     # list account profiles (local only)
 ```
 
 > Credentials: `~/.config/colab-cli/auth.json`
+
+#### Multiple Accounts
+
+`COLAB_PROFILE` selects the Colab account per process, so different accounts can run at the same time on one machine:
+
+```bash
+COLAB_PROFILE=me@gmail.com colab auth login   # first use of each profile
+
+# Terminal A
+export COLAB_PROFILE=me@gmail.com
+colab exec "print('A')"
+
+# Terminal B, at the same time
+export COLAB_PROFILE=work
+colab exec "print('B')"
+```
+
+- A profile is a name or an email, and is lowercased. Credentials and runtime records live in `~/.config/colab-cli/profiles/<profile>/`.
+- Without `COLAB_PROFILE`, or with `COLAB_PROFILE=default`, the CLI uses `~/.config/colab-cli/` directly. An empty or invalid value is an error.
+- An email profile only accepts its own account: signing in as anyone else fails and saves nothing. A named profile accepts any account, so keep one account per profile; records from another account's runtimes are removed as stale.
+- Runtimes belong to the profile that created them. `--endpoint` only finds runtimes in the current profile.
+- A running daemon keeps the account it started with.
+- `drive` and `drive-mount` credentials are shared across profiles, so `colab drive-mount` mounts the same Drive account on every profile's runtime.
+- Kaggle mode ignores the selected profile.
 
 ### Runtime
 

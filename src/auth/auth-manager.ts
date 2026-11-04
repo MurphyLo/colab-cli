@@ -2,7 +2,14 @@ import { OAuth2Client } from 'google-auth-library';
 import { GaxiosError } from 'gaxios';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
-import { OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, REQUIRED_SCOPES } from '../config.js';
+import {
+  COLAB_AUTH_URL_OPTIONS,
+  LOGIN_COMMAND,
+  OAUTH_CLIENT_ID,
+  OAUTH_CLIENT_SECRET,
+  PROFILE_LABEL,
+  REQUIRED_SCOPES,
+} from '../config.js';
 import { AUTHORIZATION_HEADER } from '../colab/headers.js';
 import { log } from '../logging/index.js';
 import { getStoredSession, storeSession, removeSession, RefreshableSession } from './storage.js';
@@ -69,7 +76,7 @@ export class AuthManager {
 
   async getAccessToken(): Promise<string> {
     if (!this.session) {
-      throw new Error('Not logged in. Run `colab auth login` first.');
+      throw new Error(`Not logged in${PROFILE_LABEL}. Run \`${LOGIN_COMMAND}\` first.`);
     }
     await this.refreshIfNeeded();
     return this.session.accessToken;
@@ -78,7 +85,7 @@ export class AuthManager {
   async login(onAuthUrl?: (url: string) => void): Promise<{ name: string; email: string }> {
     const scopes = [...REQUIRED_SCOPES].sort();
 
-    await runLoopbackFlow(this.oAuth2Client, scopes, onAuthUrl);
+    await runLoopbackFlow(this.oAuth2Client, scopes, onAuthUrl, COLAB_AUTH_URL_OPTIONS);
 
     const accessToken = this.oAuth2Client.credentials.access_token;
     const refreshToken = this.oAuth2Client.credentials.refresh_token;

@@ -48,6 +48,7 @@ When reproducing a project, running an unvalidated script, or otherwise executin
 - Runtime accelerators use Colab UI names such as `CPU`, `T4`, `A100`, `L4`, `G4`, `H100`, `v6e-1`, and `v5e-1`.
 - Shapes use `standard` or `high-ram`. Some accelerators are high-RAM-only; if unsure, omit `--shape` or check `colab runtime available`.
 - Kernel types: `python3` (default), `r`, `julia`. Use `--kernel` with `create` to select a non-default kernel.
+- For runtime hardware specifications and CU/hr rates, read [references/runtime-specs-and-rates.md](references/runtime-specs-and-rates.md).
 
 ## JSON Output (`--json`)
 
